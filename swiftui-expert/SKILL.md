@@ -57,6 +57,7 @@ Consult the reference file for each topic relevant to the current task:
 | Image optimization | `references/image-optimization.md` |
 | Liquid Glass (iOS 26+) | `references/liquid-glass.md` |
 | macOS | `references/macos.md` |
+| macOS app lifecycle | `references/macos-app-lifecycle.md` |
 | macOS menubar Tuist app | `references/macos-menubar-tuist.md` |
 | Deprecated API lookup | `references/latest-apis.md` |
 
@@ -91,4 +92,5 @@ These are hard rules -- violations are always bugs:
 - `references/image-optimization.md` -- AsyncImage, downsampling, caching
 - `references/liquid-glass.md` -- iOS 26+ Liquid Glass effects and fallback patterns
 - `references/macos.md` -- Scenes, window styling, views, file operations, drag & drop, AppKit interop
+- `references/macos-app-lifecycle.md` -- State transitions, networking, power management, security, deployment compliance
 - `references/macos-menubar-tuist.md` -- MenuBar Tuist App
