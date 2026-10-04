@@ -111,10 +111,10 @@ print(await counter.getValue())
 
 ### Implicit conformance
 
-Non-public structs/enums with Sendable members:
+Non-public structs and enums with Sendable members are implicitly `Sendable`. If a type is `public` or `@usableFromInline`, it must explicitly declare conformance to `Sendable` because the compiler cannot guarantee internal details across modules, and explicit conformance ensures the API contract is maintained.
 
 ```swift
-// Implicitly Sendable
+// Implicitly Sendable (internal structure, all members are Sendable)
 struct Person {
     var name: String
 }
@@ -122,15 +122,26 @@ struct Person {
 
 ### Explicit conformance required
 
-Public types need explicit declaration:
+Public types must explicitly declare conformance:
 
 ```swift
 public struct Person: Sendable {
-    var name: String
+    public var name: String
 }
 ```
 
-**Why**: Compiler can't verify internal details of public types across modules.
+### Opting Out: Unavailable Conformance
+
+To explicitly prevent a type from being sent across isolation domains (opting out of implicit conformance or preventing accidental transfers), you can declare an unavailable `Sendable` conformance.
+
+```swift
+struct FileDescriptor {
+    let rawValue: Int
+}
+
+@available(*, unavailable)
+extension FileDescriptor: Sendable {}
+```
 
 ### Frozen types
 
@@ -332,9 +343,10 @@ actor Cache {
 }
 ```
 
-## Region-Based Isolation
+## Region-Based Isolation (SE-0414)
 
-Compiler allows non-Sendable types in same scope:
+In Swift 6, the compiler uses **Region-Based Isolation** to track mutable state. The compiler analyzes the control-flow of your program to determine if a non-`Sendable` value belongs to a disconnected isolation region.
+If a non-`Sendable` value is transferred to another isolation domain (e.g., captured by a background `Task` or sent to an actor), but the compiler can prove that the value is **never accessed again** in the source domain after the transfer, it is allowed without errors.
 
 ```swift
 class Article {
@@ -343,35 +355,44 @@ class Article {
 }
 
 func check() {
-    let article = Article(title: "Swift")
+    let article = Article(title: "Swift Concurrency")
     
+    // Transferred to the background Task's isolation region
     Task {
-        print(article.title) // ✅ OK - same region
+        print(article.title) // ✅ OK - region transferred
     }
+    
+    // No accesses to `article` here in the caller
 }
 ```
 
-**Why**: No mutation after transfer, so no data race risk.
+### Accessing After Transfer Causes Compiler Error
 
-### Breaks when accessed after transfer
+If you attempt to access the variable after it has been transferred, the compiler detects that the region is not disconnected and raises an isolation error:
 
 ```swift
 func check() {
-    let article = Article(title: "Swift")
+    let article = Article(title: "Swift Concurrency")
     
     Task {
-        print(article.title)
+        print(article.title) // Transferred here
     }
     
-    print(article.title) // ❌ Error - accessed after transfer
+    // ❌ Compiler Error: sending 'article' risks causing data races
+    // 'article' is a non-Sendable type and is accessed after transfer
+    print(article.title) 
 }
 ```
 
-## The sending Keyword
+---
 
-Enforces ownership transfer for non-Sendable types:
+## The sending Modifier (SE-0430)
 
-### Parameter values
+For explicit function boundaries (methods and parameters), you can use the `sending` modifier to require that a non-`Sendable` parameter or return value is in a disconnected isolation region. This enables safe transfers across isolation domains.
+
+### 1. Function Parameters
+
+Using `sending` on a parameter requires the caller to pass a value from a disconnected region, transferring ownership to the callee.
 
 ```swift
 actor Logger {
@@ -380,27 +401,43 @@ actor Logger {
     }
 }
 
+// callee accepts a 'sending' non-Sendable parameter
 func printTitle(article: sending Article) async {
     let logger = Logger()
-    await logger.log(article: article)
+    await logger.log(article: article) // Transfers into actor
 }
 
-// Usage
-let article = Article(title: "Swift")
-await printTitle(article: article)
-// article no longer accessible here
+// Caller Usage
+func process() async {
+    let article = Article(title: "Swift")
+    await printTitle(article: article) // ✅ OK - transferred
+    
+    // ❌ Error: 'article' is accessed here after being sent
+    print(article.title)
+}
 ```
 
-### Return values
+### 2. Return Values
+
+Using `sending` on a return type guarantees the callee returns a value in a disconnected region, transferring ownership to the caller's isolation domain.
 
 ```swift
-@SomeActor
+@MainActor
 func createArticle(title: String) -> sending Article {
+    // Returns a freshly created, disconnected Article
     return Article(title: title)
 }
-```
 
-Transfers ownership to caller's region.
+func processArticle() async {
+    // Calling MainActor function, but result is 'sending'
+    let article = await createArticle(title: "Swift 6") 
+    
+    // Since it was 'sending', we own it in our region
+    Task {
+        print(article.title) // ✅ OK to send to background
+    }
+}
+```
 
 ## Global Variables
 

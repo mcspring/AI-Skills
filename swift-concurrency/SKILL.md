@@ -12,6 +12,7 @@ Before proposing a fix:
 2. Capture the exact diagnostic and offending symbol.
 3. Determine the isolation boundary: `@MainActor`, custom actor, actor instance isolation, or `nonisolated`.
 4. Confirm whether the code is UI-bound or intended to run off the main actor.
+5. Identify if non-Sendable values are crossing isolation domains, and check if Region-Based Isolation (SE-0414) allows this or if explicit `sending` annotations (SE-0430) are needed at the boundaries.
 
 Project settings that change concurrency behavior:
 
@@ -28,6 +29,7 @@ Guardrails:
 
 - Do not recommend `@MainActor` as a blanket fix. Justify why the code is truly UI-bound.
 - Prefer structured concurrency over unstructured tasks. Use `Task.detached` only with a clear reason.
+- Prefer `sending` parameter annotations or region-based isolation over `@unchecked Sendable` for non-Sendable values crossing isolation boundaries.
 - If recommending `@preconcurrency`, `@unchecked Sendable`, or `nonisolated(unsafe)`, require a documented safety invariant and a follow-up removal plan.
 - Optimize for the smallest safe change. Do not refactor unrelated architecture during migration.
 
@@ -53,6 +55,8 @@ Skip Quick Fix Mode when any of these are true:
 | `Main actor-isolated ... cannot be used from a nonisolated context` | Is this truly UI-bound? | Isolate the caller to `@MainActor` or use `await MainActor.run { ... }` only when main-actor ownership is correct. | `references/actors.md`, `references/threading.md` |
 | `Actor-isolated type does not conform to protocol` | Must the requirement run on the actor? | Prefer isolated conformance (e.g., `extension Foo: @MainActor SomeProtocol`); use `nonisolated` only for truly nonisolated requirements. | `references/actors.md` |
 | `Sending value of non-Sendable type ... risks causing data races` | What isolation boundary is being crossed? | Keep access inside one actor, or convert the transferred value to an immutable/value type. | `references/sendable.md`, `references/threading.md` |
+| `Passing non-Sendable ... outside of its defining isolation region` | Does the caller access the value after transferring it? | Do not access the value in the caller after the transfer to leverage region isolation (SE-0414), or mark boundary with `sending` (SE-0430). | `references/sendable.md` |
+| `Task-isolated value of type ... passed as a sending parameter` | Is the sent value captured or shared in multiple contexts? | Ensure the value resides in a disconnected region (e.g., freshly constructed and not shared). | `references/sendable.md` |
 | `SwiftLint async_without_await` | Is `async` actually required by protocol, override, or `@concurrent`? | Remove `async`, or use a narrow suppression with rationale. Never add fake awaits. | `references/migration.md` § Linting |
 | `wait(...) is unavailable from asynchronous contexts` | Is this legacy XCTest async waiting? | Replace with `await fulfillment(of:)` or Swift Testing equivalents. | `references/testing.md` |
 | Core Data concurrency warnings | Are `NSManagedObject` instances crossing contexts or actors? | Pass `NSManagedObjectID` or map to a Sendable value type. | `references/core-data.md` |
@@ -74,6 +78,7 @@ Prefer changes that preserve behavior while satisfying data-race safety:
 - **Shared mutable state**: move it behind an `actor`, or use `@MainActor` only if the state is UI-owned.
 - **Background work**: when work must hop off caller isolation, use an `async` API marked `@concurrent`; when work can safely inherit caller isolation, use `nonisolated` without `@concurrent`.
 - **Sendability issues**: prefer immutable values and explicit boundaries over `@unchecked Sendable`.
+- **Crossing boundaries with non-Sendable values**: leverage region-based isolation by ensuring the value is not accessed after the transfer, or mark parameters/results with `sending`.
 
 ## Concurrency Tool Selection
 
@@ -81,18 +86,20 @@ Prefer changes that preserve behavior while satisfying data-race safety:
 |---|---|---|
 | Single async operation | `async/await` | Default choice for sequential async work |
 | Fixed parallel operations | `async let` | Known count at compile time; auto-cancelled on throw |
-| Dynamic parallel operations | `withTaskGroup` | Unknown count; structured — cancels children on scope exit |
+| Dynamic parallel operations | `withTaskGroup` | Unknown count; structured — collects and returns results |
+| Dynamic parallel (fire-and-forget) | `withDiscardingTaskGroup` | Unknown count; structured — discards results eagerly (prevents memory leaks) |
 | Sync → async bridge | `Task { }` | Inherits actor context; use `Task.detached` only with documented reason |
 | Shared mutable state | `actor` | Prefer over locks/queues; keep isolated sections small |
 | UI-bound state | `@MainActor` | Only for truly UI-related code; justify isolation |
+| Synchronous state protection | `Mutex` | Low-overhead locking for synchronous contexts (iOS 18+ / macOS 15+) |
 
 ### Common Scenarios
 
-**Network request with UI update**
+**Network request with UI update (from nonisolated context)**
 ```swift
-Task { @concurrent in
-    let data = try await fetchData()
-    await MainActor.run { self.updateUI(with: data) }
+Task {
+    let data = try await fetchData() // Runs asynchronously
+    await MainActor.run { self.updateUI(with: data) } // Explicit hop back to main thread
 }
 ```
 

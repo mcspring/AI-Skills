@@ -191,17 +191,28 @@ actor BankAccount {
 
 ### Isolated parameters
 
-Reduce suspension points by inheriting caller's isolation:
+By marking an actor parameter as `isolated`, a function inherits the caller's actor isolation context. This allows it to access the actor's mutable state synchronously without any `await` keyword. It also prevents actor reentrancy during the function's execution because no suspension points are introduced for the isolated actor.
+
+**Gotcha**: A function can have at most one isolated parameter. Having multiple isolated parameters could lead to calling the function with different actor instances, violating static isolation.
 
 ```swift
-struct Charger {
-    static func charge(
+struct AccountCoordinator {
+    // ❌ Compiler Error: at most one parameter can be 'isolated'
+    static func transfer(
         amount: Double,
-        from account: isolated BankAccount
-    ) async throws -> Double {
-        // No await needed - we're isolated to account
-        try account.withdraw(amount: amount)
-        return account.balance
+        from source: isolated BankAccount,
+        to destination: isolated BankAccount
+    ) async throws { ... }
+
+    // ✅ Correct: Only one parameter is isolated. 
+    // Accessing 'source' is synchronous, but 'destination' requires await.
+    static func transfer(
+        amount: Double,
+        from source: isolated BankAccount,
+        to destination: BankAccount
+    ) async throws {
+        source.withdraw(amount: amount) // Synchronous call on isolated actor
+        await destination.deposit(amount: amount) // Asynchronous call on destination
     }
 }
 ```
@@ -311,51 +322,73 @@ extension PersonViewModel: @MainActor Equatable {
 
 ## Actor Reentrancy
 
-**Critical**: State can change between suspension points.
+**Critical**: An actor does not block the thread when it suspends at an `await` point. While suspended, the actor is unlocked, and other tasks can execute on it, possibly modifying the actor's state. Therefore, **state invariants can change between suspension points**.
+
+### The Reentrancy Bug
+
+Checking a condition before an `await` and mutating the state after the `await` is a classic reentrancy bug.
 
 ```swift
 actor BankAccount {
-    var balance: Double
+    var balance: Double = 100.0
     
-    func deposit(amount: Double) async {
-        balance += amount
+    // ❌ Buggy: state checked before suspension, mutated after suspension
+    func withdraw(amount: Double) async throws {
+        guard balance >= amount else { throw TransactionError.insufficientFunds }
         
-        // ⚠️ Actor unlocked during await
-        await logActivity("Deposited \(amount)")
+        // ⚠️ Actor is unlocked during this suspension point!
+        let authorized = try await authorizationService.authorize(amount: amount)
+        guard authorized else { throw TransactionError.unauthorized }
         
-        // ⚠️ Balance may have changed!
-        print("Balance: \(balance)")
+        // ⚠️ Reentrancy danger: balance may have changed during authorize!
+        // Another task could have run in the meantime and withdrawn the funds.
+        balance -= amount
     }
 }
 ```
 
-### Problem
+### Solutions to Actor Reentrancy
+
+#### 1. Re-verify Invariants After Returning
+
+Always re-check conditions and invariants immediately after returning from an `await` before performing mutations.
 
 ```swift
-async let _ = account.deposit(50)
-async let _ = account.deposit(50)
-async let _ = account.deposit(50)
-
-// May print same balance three times:
-// Balance: 150
-// Balance: 150
-// Balance: 150
-```
-
-### Solution
-
-Complete actor work before suspending:
-
-```swift
-func deposit(amount: Double) async {
-    balance += amount
-    print("Balance: \(balance)") // Before suspension
+// ✅ Solution 1: Re-verify invariants
+func withdraw(amount: Double) async throws {
+    let authorized = try await authorizationService.authorize(amount: amount)
+    guard authorized else { throw TransactionError.unauthorized }
     
-    await logActivity("Deposited \(amount)")
+    // Re-verify the invariant inside the isolated state
+    guard balance >= amount else { throw TransactionError.insufficientFunds }
+    balance -= amount
 }
 ```
 
-**Rule**: Don't assume state is unchanged after `await`.
+#### 2. Mutate First and Rollback (Compensating Transactions)
+
+Perform the mutation synchronously before suspending, and perform a compensating rollback if the subsequent async operation fails.
+
+```swift
+// ✅ Solution 2: Mutate first and rollback on failure
+func withdraw(amount: Double) async throws {
+    guard balance >= amount else { throw TransactionError.insufficientFunds }
+    balance -= amount // Subtract immediately before suspending
+    
+    do {
+        let authorized = try await authorizationService.authorize(amount: amount)
+        if !authorized {
+            balance += amount // Compensating transaction (rollback)
+            throw TransactionError.unauthorized
+        }
+    } catch {
+        balance += amount // Compensating transaction (rollback)
+        throw error
+    }
+}
+```
+
+**Rule**: Do not assume state invariants remain unchanged across `await` points.
 
 ## #isolation Macro
 

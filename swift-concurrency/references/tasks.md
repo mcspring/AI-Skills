@@ -79,6 +79,24 @@ let task = Task {
 }
 ```
 
+### Checking Cancellation in Loops
+
+When implementing loops in asynchronous functions (especially CPU-intensive loops or infinite event/polling loops), you must check for cancellation on each iteration.
+
+```swift
+func processLargeDataset(_ items: [DataItem]) async throws {
+    for item in items {
+        // 1. Check cancellation at the beginning of each iteration
+        try Task.checkCancellation()
+        
+        // 2. Perform work
+        try await process(item)
+    }
+}
+```
+
+If you are iterating over an `AsyncSequence` (like a `TaskGroup` or a stream), the `for await` loop naturally suspends at the start of each iteration. However, if the underlying sequence does not automatically throw on cancellation, you must still check cancellation manually inside the loop body.
+
 ### Child task cancellation
 
 Canceling a parent automatically notifies all children:
@@ -94,6 +112,37 @@ parent.cancel() // Both children notified
 ```
 
 Children must still check `Task.isCancelled` to stop work.
+
+### Task Cancellation Handlers
+
+For work that requires immediate cleanup or notification when cancelled (especially when bridging synchronous or legacy APIs like URLSession data tasks or custom delegates), use `withTaskCancellationHandler(operation:onCancel:isolation:)`.
+
+```swift
+import Synchronization
+
+func downloadData(from url: URL) async throws -> Data {
+    let urlSessionTask = Mutex<URLSessionDataTask?>(nil)
+    
+    return try await withTaskCancellationHandler {
+        try await withCheckedThrowingContinuation { continuation in
+            let task = URLSession.shared.dataTask(with: url) { data, _, error in
+                if let error = error {
+                    continuation.resume(throwing: error)
+                } else if let data = data {
+                    continuation.resume(returning: data)
+                }
+            }
+            urlSessionTask.withLock { $0 = task }
+            task.resume()
+        }
+    } onCancel: {
+        urlSessionTask.withLock { $0?.cancel() }
+    }
+}
+```
+
+> [!WARNING]
+> Because `onCancel` executes immediately and concurrently with the `operation` closure when cancellation is triggered, you must not share mutable state between the `operation` and `onCancel` unless it is thread-safe (e.g., protected by a `Mutex`, or isolated to the same actor). Doing so will cause data races.
 
 ## Error Handling
 
@@ -281,6 +330,16 @@ await withDiscardingTaskGroup { group in
 - No `next()` calls needed
 - Automatically waits for completion
 - Ideal for side effects
+
+### Memory Safety: TaskGroup vs DiscardingTaskGroup
+
+In standard structured concurrency:
+- **`withTaskGroup`** accumulates the return values (and task metadata) of all child tasks in memory. If you run a long-running or infinite loop (such as a TCP listener or background monitoring loop) and spawn child tasks using a standard `TaskGroup`, this will cause a **memory leak** unless you explicitly consume the results by calling `group.next()` or iterating over the group.
+- **`withDiscardingTaskGroup`** (and `withThrowingDiscardingTaskGroup`) eagerly discards the results of child tasks as soon as they complete. Memory is freed immediately, preventing accumulation and leaks.
+
+**Rule of Thumb**:
+- Use `withTaskGroup` only when you need to gather, transform, or return the results of child tasks.
+- Use `withDiscardingTaskGroup` for fire-and-forget loops, background monitoring, event handling, or listener loops where child tasks execute side effects and return no collected data.
 
 ### Error handling
 
