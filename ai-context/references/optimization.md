@@ -1,146 +1,148 @@
 # Context Optimization
 
-Compression strategies, observation masking, KV-cache optimization, context partitioning, and evaluation.
+Use this reference when active context is becoming expensive, noisy, stale, or too large for reliable task completion.
 
-## Priority Order
+## Optimize in This Order
 
-Apply in this sequence — each subsequent technique is higher risk:
+Prefer interventions with the lowest information risk first:
 
-1. **KV-cache optimization** — zero quality risk, immediate cost/latency savings
-2. **Observation masking** — 60–80% reduction in tool outputs, <2% quality impact
-3. **Compaction** — 50–70% reduction, <5% quality loss; lossy — apply after masking
-4. **Context partitioning** — split across sub-agents; real coordination overhead
+1. **Select** — stop loading irrelevant material.
+2. **Structure** — make evidence/tool results easier to locate.
+3. **Offload** — keep large artifacts outside active context with reliable retrieval handles.
+4. **Mask/prune** — remove obsolete low-value observations.
+5. **Compact** — summarize history while preserving durable state and evidence.
+6. **Isolate** — split independent investigations when one context creates interference.
 
----
+Do not compact useful evidence simply because a fixed token percentage was reached.
 
-## KV-Cache Optimization
+## Retrieval Before Compression
 
-Stable prefixes enable cache reuse. Structure every prompt:
+The cheapest token is often the token never loaded.
 
-1. System prompt (most stable — never changes within session)
-2. Tool definitions (stable across requests)
-3. Reused templates and few-shot examples
-4. Conversation history (grows but shares prefix)
-5. Current query and dynamic content (always last)
+Improve:
 
-**Critical**: even a single whitespace change invalidates the entire cache downstream. Remove timestamps, session IDs, and counters from system prompts. Move dynamic metadata to a separate user message.
+- file/symbol/topic routing;
+- metadata and summaries;
+- exact-section retrieval;
+- deduplication;
+- query refinement.
 
-**Targets**: 70%+ hit rate → 50%+ cost reduction, 40%+ latency reduction.
+If the agent repeatedly loads whole documents to answer narrow questions, fix retrieval granularity before building a stronger summarizer.
 
----
+## Observation Pruning
 
-## Observation Masking
+Tool outputs dominate many agent trajectories. Keep the parts needed for future action:
 
-Mask selectively based on recency and relevance:
+- exact error and location;
+- identifiers/paths/URLs;
+- command result and relevant measurements;
+- state transitions;
+- evidence supporting a decision.
 
-- **Never mask**: current-task observations, most recent turn, active reasoning chains, error outputs during debugging
-- **Mask after 3+ turns**: verbose outputs whose key points are extracted. Replace with: `[Obs:{ref_id} elided. Key: {summary}. Full content retrievable.]`
-- **Always mask immediately**: duplicate outputs, boilerplate headers, already-summarized results
+Drop repeated banners, unchanged listings, verbose logs after the relevant lines are captured, and intermediate output superseded by later state.
 
-**Targets**: 60–80% reduction in masked observations, <2% quality impact.
+## Offloading
 
----
+Move large content to a durable artifact when it can be fetched reliably later.
 
-## Compression Strategies
+Store a compact pointer in active context:
 
-Three production-ready approaches — choose by session profile:
+- artifact/file identifier;
+- short description;
+- relevant section/range;
+- provenance/version;
+- reason it may be needed again.
 
-### Anchored Iterative Summarization (Best Quality — Score: 3.70)
-For long-running sessions where file tracking matters. Maintains structured persistent summaries with mandatory sections:
+Offloading without a good retrieval key merely converts context loss into retrieval failure.
 
-```markdown
-## Session Intent
-[What the user is trying to accomplish]
+## Compaction
 
-## Files Modified
-- auth.controller.ts: Fixed JWT token generation
-- config/redis.ts: Updated connection pooling
+A good compaction preserves the task state needed to continue:
 
-## Decisions Made
-- Using Redis connection pool instead of per-request connections
+- goal and constraints;
+- completed actions;
+- unresolved issues;
+- current workspace/system state;
+- decisions and rationale;
+- exact artifacts/errors/IDs needed later;
+- next likely actions.
 
-## Current State
-- 14 tests passing, 2 failing
+It should remove narration, repetition, dead hypotheses, and details recoverable cheaply from source.
 
-## Next Steps
-1. Fix remaining test failures
-```
+### Validate Compaction
 
-On compression trigger: summarize only newly-truncated span and **merge** into existing summary (don't regenerate). Structure forces preservation — dedicated sections act as checklists.
+Probe the compacted state with questions such as:
 
-### Regenerative Full Summary (Readable — Score: 3.44)
-For sessions with clear phase boundaries. Generates detailed structured summary on each trigger. Weakness: cumulative detail loss across repeated cycles.
+- What remains to be done?
+- Which files/objects were changed?
+- What failed and why?
+- What constraints must not be violated?
+- Where is the supporting evidence?
 
-### Opaque Compression (Max Savings — Score: 3.35)
-For short sessions with low re-fetching costs. 99%+ compression ratios but sacrifices interpretability entirely. Never use when debugging or artifact tracking is critical.
+If the compacted context cannot answer these, it discarded task state rather than compressing it.
 
-### Artifact Trail Problem (CRITICAL)
-Artifact trail integrity scores only **2.2–2.5/5.0** across all methods. Always preserve explicitly:
-- Files created (full paths)
-- Files modified (with function names, not just file names)
-- Files read but not changed
-- Specific identifiers: function names, variable names, error messages, error codes
+## Compression Styles
 
-Implement a **separate artifact index** rather than relying on the summarizer.
+Choose based on use:
 
----
+- **structured state summary** — best for agent continuation;
+- **human-readable narrative** — useful for handoff/review;
+- **machine-oriented compact representation** — useful only if downstream retrieval/parsing is reliable.
 
-## Compression Triggers
+Avoid opaque compression when humans/agents must debug or update the state later.
 
-| Strategy | Trigger Point | Trade-off |
-|----------|---------------|-----------|
-| Fixed threshold | 70–80% utilization | Simple, may compress early |
-| Sliding window | Last N turns + summary | Predictable size |
-| Importance-based | Low-relevance first | Complex, preserves signal |
-| Task-boundary | At logical completions | Clean summaries, unpredictable timing |
+## Prompt Caching
 
-**Default**: sliding window with structured summaries for coding agents.
+Keep stable prefixes stable when the model/provider supports caching:
 
----
+- system/developer rules;
+- tool schemas;
+- stable project instructions.
 
-## Context Partitioning
+Put volatile observations later. Measure cache hit behavior rather than assuming exact savings.
 
-Split across sub-agents when estimated context exceeds 60% of window. Each agent gets clean, focused context for its subtask.
+## Partitioning and Sub-Agents
 
-**Break-even**: typically requires 3+ independent subtasks. Below that, coordination overhead (system prompt + tools + aggregation per sub-agent) exceeds savings.
+Split context when work is genuinely separable:
 
-### Three-Phase Workflow for Large Codebases
-1. **Research** — explore architecture, compress into structured analysis document
-2. **Planning** — convert research into implementation spec (5M-token codebase → ~2000 words)
-3. **Implementation** — execute against spec + active working files only
+- independent research tracks;
+- large code areas with minimal shared state;
+- independent verification/review;
+- tasks where one branch's tool output would distract another.
 
----
+Define a narrow handoff contract: question, constraints, expected result, evidence/provenance.
 
-## Probe-Based Evaluation
+Do not create sub-agents only to shrink context if coordination overhead exceeds the benefit.
 
-Traditional metrics (ROUGE, embedding similarity) fail for functional compression quality. Use probes:
+## Long Context
 
-| Probe Type | Tests | Example |
-|------------|-------|---------|
-| Recall | Factual retention | "What was the original error message?" |
-| Artifact | File tracking | "Which files have we modified?" |
-| Continuation | Task planning | "What should we do next?" |
-| Decision | Reasoning chain | "What did we decide about Redis?" |
+When long context is unavoidable:
 
-### Six Scoring Dimensions
-1. **Accuracy** — file paths, function names, error codes correct? (largest variation: 0.6 gap)
-2. **Context Awareness** — reflects current conversation state?
-3. **Artifact Trail** — knows files read/modified? (universally weak: 2.2–2.5)
-4. **Completeness** — addresses all parts of question?
-5. **Continuity** — can work continue without re-fetching?
-6. **Instruction Following** — respects stated constraints?
+- keep source boundaries and metadata explicit;
+- retrieve/rank relevant sections where possible;
+- separate current task state from archival evidence;
+- eliminate duplicate copies of the same document/tool output;
+- verify key facts against source instead of trusting old summaries.
 
----
+## Metrics
 
-## Gotchas
+Tune optimization from telemetry for the specific model/workload:
 
-1. **Never compress tool definitions/schemas** — agent can't invoke tools whose parameters are summarized away
-2. **Compressed summaries hallucinate facts** — validate against source before discarding originals
-3. **Compression breaks artifact references** — "updated the config file" when agent needs `config/redis.ts`
-4. **Early turns contain irreplaceable constraints** — protect from compression or extract into persistent preamble
-5. **95% compression compounds** — 3 cycles at 95% → 0.0125% of original remains
-6. **Code doesn't compress like prose** — removing one token from a function signature makes it useless
-7. **Compaction under pressure loses critical state** — at >85% utilization, summarization quality itself degrades
-8. **Whitespace breaks KV-cache** — pin system prompts as immutable strings; diff templates byte-for-byte
-9. **Timestamps in system prompts destroy cache** — `Current date: {today}` forces daily cache miss
-10. **Masking error outputs breaks debugging** — suspend masking for error-related observations during active debug
+- task success/accuracy;
+- tokens per completed task;
+- retrieval precision/recall;
+- tool-output share;
+- cache hit rate;
+- latency;
+- compaction/recovery failures.
+
+Thresholds are experiment results, not universal rules.
+
+## Avoid
+
+- fixed compaction triggers copied across models;
+- compressing system/tool contracts into lossy prose;
+- retaining every tool output “just in case”;
+- deleting provenance when summarizing evidence;
+- partitioning highly coupled work into agents that must constantly resynchronize;
+- optimizing tokens while increasing retries or reducing correctness.

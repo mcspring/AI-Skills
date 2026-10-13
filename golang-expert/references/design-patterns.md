@@ -2,21 +2,19 @@
 
 Idiomatic Go patterns for production-ready code. Favor simplicity and explicitness — apply patterns only when they solve a real problem.
 
-## Core Rules
+## Core Heuristics
 
-1. Constructors SHOULD use **functional options** — scale as APIs evolve, no breaking changes
-2. Functional options MUST **return error** if validation can fail
-3. **Avoid `init()`** — runs implicitly, cannot return errors, makes testing unpredictable
-4. Enums SHOULD **start at 1** (or Unknown sentinel at 0) — zero value catches uninitialized
-5. Error cases MUST be **handled first** with early return — keep happy path flat
-6. **Panic is for bugs, not expected errors**
-7. **`defer Close()` immediately** after opening
-8. **`runtime.AddCleanup`** over `runtime.SetFinalizer` (Go 1.24+)
-9. Every external call SHOULD **have a timeout**
-10. **Limit everything** — pool sizes, queue depths, buffers
-11. Retry logic MUST **check `ctx.Err()`** between attempts
-12. **Compile regexp once** at package level
-13. **Minimize dependencies** — a little recode > a big dependency
+1. Use constructors only when initialization, invariants, or dependency injection need them.
+2. Functional options are useful for APIs with many optional settings; plain parameters or config structs can be clearer for small APIs.
+3. If an option can fail validation, choose an API shape that can surface that error rather than hiding it.
+4. Prefer explicit initialization over side-effectful `init()`; keep `init()` for genuinely package-level setup that cannot fail or needs no injection.
+5. Design enum-like zero values to be useful when possible; `Unknown`/`Invalid` is one option, not a requirement.
+6. Early returns often flatten error-heavy code, but do not contort simple control flow to satisfy a style rule.
+7. Panic is generally for programmer errors/invariants rather than expected runtime failures.
+8. Acquire and release resources in the smallest clear scope; `defer` is usually the simplest cleanup mechanism.
+9. For Go 1.24+, prefer `runtime.AddCleanup` to finalizers when cleanup semantics fit that API.
+10. Bound resources that can otherwise grow without limit, based on workload and backpressure needs.
+11. Retry loops should respect cancellation/deadlines owned by their caller.
 
 ## Functional Options
 
@@ -101,7 +99,7 @@ defer rows.Close()
 
 ## Resilience
 
-### Timeout Every External Call
+### Deadline Ownership
 
 ```go
 ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -111,7 +109,7 @@ resp, err := httpClient.Do(req.WithContext(ctx))
 
 ### Retry with Context
 
-Retry logic MUST check `ctx.Err()` between attempts and use exponential/linear backoff via `select` on `ctx.Done()`.
+Retry logic should stop when the caller's context is done and use a backoff/rate policy appropriate to the dependency. Do not stack arbitrary nested timeouts when an outer boundary already owns the deadline.
 
 ## Data Handling
 

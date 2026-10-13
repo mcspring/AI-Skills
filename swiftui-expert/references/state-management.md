@@ -1,417 +1,134 @@
-# SwiftUI State Management Reference
-
-## Table of Contents
-
-- [Property Wrapper Selection Guide](#property-wrapper-selection-guide)
-- [@State](#state)
-- [Property Wrappers Inside @Observable Classes](#property-wrappers-inside-observable-classes)
-- [@Binding](#binding)
-- [@FocusState](#focusstate)
-- [@StateObject vs @ObservedObject (Legacy - Pre-iOS 17)](#stateobject-vs-observedobject-legacy---pre-ios-17)
-- [Don't Pass Values as @State](#dont-pass-values-as-state)
-- [@Bindable (iOS 17+)](#bindable-ios-17)
-- [let vs var for Passed Values](#let-vs-var-for-passed-values)
-- [Environment and Preferences](#environment-and-preferences)
-- [Decision Flowchart](#decision-flowchart)
-- [State Privacy Rules](#state-privacy-rules)
-- [Avoid Nested ObservableObject](#avoid-nested-observableobject)
-- [Key Principles](#key-principles)
-
-## Property Wrapper Selection Guide
+# SwiftUI State and Data Flow
 
-| Wrapper | Use When | Notes |
-|---------|----------|-------|
-| `@State` | Internal view state that triggers updates | Must be `private` |
-| `@Binding` | Child view needs to modify parent's state | Don't use for read-only |
-| `@Bindable` | iOS 17+: View receives `@Observable` object and needs bindings | For injected observables |
-| `let` | Read-only value passed from parent | Simplest option |
-| `var` | Read-only value that child observes via `.onChange()` | For reactive reads |
-
-**Legacy (Pre-iOS 17):**
-| Wrapper | Use When | Notes |
-|---------|----------|-------|
-| `@StateObject` | View owns an `ObservableObject` instance | Use `@State` with `@Observable` instead |
-| `@ObservedObject` | View receives an `ObservableObject` from outside | Never create inline |
-
-## @State
+Use this reference to choose state ownership, bindings, Observation, focus, environment, and compatibility wrappers.
 
-Always mark `@State` properties as `private`. Use for internal view state that triggers UI updates.
+## Start With Ownership
 
-```swift
-// Correct
-@State private var isAnimating = false
-@State private var selectedTab = 0
-```
+Before choosing a property wrapper, ask:
 
-**Why Private?** Marking state as `private` makes it clear what's created by the view versus what's passed in. It also prevents accidentally passing initial values that will be ignored (see "Don't Pass Values as @State" below).
+1. Who creates the value?
+2. Who is allowed to mutate it?
+3. Which views need to observe it?
+4. Does the value need a binding projection?
+5. What deployment target/toolchain behavior applies?
 
-### iOS 17+ with @Observable (Preferred)
+The wrapper follows the ownership model; it should not define the architecture.
 
-**Always prefer `@Observable` over `ObservableObject`.** With iOS 17's `@Observable` macro, use `@State` instead of `@StateObject`:
+## Modern Observation
 
-```swift
-@Observable
-@MainActor  // Always mark @Observable classes with @MainActor
-final class DataModel {
-    var name = "Some Name"
-    var count = 0
-}
+For projects that support Observation, prefer `@Observable` models with SwiftUI-managed ownership.
 
-struct MyView: View {
-    @State private var model = DataModel()  // Use @State, not @StateObject
+Typical patterns:
 
-    var body: some View {
-        VStack {
-            TextField("Name", text: $model.name)
-            Stepper("Count: \(model.count)", value: $model.count)
-        }
-    }
-}
-```
+- view-owned observable reference → store with `@State`;
+- injected observable reference → plain property when only reading;
+- injected observable that needs bindings → `@Bindable` locally;
+- shared dependency from environment → `@Environment` with an observable value when appropriate.
 
-**Critical**: When a view *owns* an `@Observable` object, always use `@State` -- not `let`. Without `@State`, SwiftUI may recreate the instance when a parent view redraws, losing accumulated state. `@State` tells SwiftUI to preserve the instance across view redraws. Using `@State` also provides bindings directly (no need for `@Bindable`).
+Do not wrap every observable input in `@Bindable`; use it only where binding projection is needed.
 
-**Note**: You may want to mark `@Observable` classes with `@MainActor` to ensure thread safety with SwiftUI, unless your project or package uses Default Actor Isolation set to `MainActor`—in which case, the explicit attribute is redundant and can be omitted.
+## iOS 27 / Xcode 27 `@State`
 
-## Property Wrappers Inside @Observable Classes
+With the 2027 SDK generation, `@State` is implemented as a macro and lazily initializes stored class instances once per view lifetime. This improves ownership of reference values stored directly in state.
 
-**Critical**: The `@Observable` macro transforms stored properties to add observation tracking. Property wrappers (like `@AppStorage`, `@SceneStorage`, `@Query`) also transform properties with their own storage. These two transformations conflict, causing a compiler error.
+Check the build toolchain before relying on this behavior; deployment target alone does not describe compiler-generated semantics.
 
-**Always annotate property-wrapper properties with `@ObservationIgnored` inside `@Observable` classes.**
+## Swift 6.4 Observation
 
-```swift
-@Observable
-@MainActor
-final class SettingsModel {
-    // WRONG - compiler error: property wrappers conflict with @Observable
-    // @AppStorage("username") var username = ""
+Swift 6.4 expands Observation with finer-grained and continuous change-notification capabilities. Use those APIs when code outside SwiftUI needs explicit observation behavior; do not recreate observation pipelines inside views unless the framework behavior is insufficient.
 
-    // CORRECT - @ObservationIgnored prevents the conflict
-    @ObservationIgnored @AppStorage("username") var username = ""
-    @ObservationIgnored @AppStorage("isDarkMode") var isDarkMode = false
+## `@State`
 
-    // Regular stored properties work fine with @Observable
-    var isLoading = false
-}
-```
+Use for local source-of-truth state owned by the view/lifetime SwiftUI manages.
 
-This applies to **any** property wrapper used inside an `@Observable` class, including but not limited to:
-- `@AppStorage`
-- `@SceneStorage`
-- `@Query` (SwiftData)
+Good fits:
 
-**Note**: Since `@ObservationIgnored` disables observation tracking for that property, SwiftUI won't detect changes through the Observation framework. However, property wrappers like `@AppStorage` already notify SwiftUI of changes through their own mechanisms (e.g., UserDefaults KVO), so views still update correctly.
+- transient UI state;
+- selected IDs/options;
+- local value state;
+- observable reference owned by the view when using Observation.
 
-**Never remove `@ObservationIgnored`** from property-wrapper properties in `@Observable` classes — doing so causes a compiler error.
+Avoid declaring an externally supplied changing value as `@State`: state initializes from the input rather than remaining a live mirror of it.
 
-## @Binding
+## `@Binding`
 
-Use only when child view needs to **modify** parent's state. If child only reads the value, use `let` instead.
+Use when a child needs read/write access to state owned elsewhere.
 
-```swift
-// Parent
-struct ParentView: View {
-    @State private var isSelected = false
+Prefer a plain value plus action closure when the child only needs to report a semantic event. A binding is appropriate when the child conceptually edits the same value.
 
-    var body: some View {
-        ChildView(isSelected: $isSelected)
-    }
-}
+## `@Bindable`
 
-// Child - will modify the value
-struct ChildView: View {
-    @Binding var isSelected: Bool
+Use with Observation when you have an observable object but need `$model.property` bindings. It creates binding access; it does not create ownership.
 
-    var body: some View {
-        Button("Toggle") {
-            isSelected.toggle()
-        }
-    }
-}
-```
+## `let` and Plain Properties
 
-### When NOT to use @Binding
+Use plain stored properties for injected values the view reads.
 
-- **Don't use `@Binding` for read-only values.** If the child only displays the value and never modifies it, use `let` instead. `@Binding` adds unnecessary overhead and implies a write contract that doesn't exist.
+`let` is appropriate for immutable configuration. A `var` may be appropriate when SwiftUI recreates the view with changing values or the property participates in APIs such as `onChange`; neither implies local state ownership.
 
-## @FocusState
+## Legacy `ObservableObject`
 
-Use `@FocusState` to control text input focus in SwiftUI. Choose the focus value type based on how many fields the view manages.
+For deployment/toolchains that require Combine-based observation:
 
-### Bool vs enum
+- `@StateObject` owns an `ObservableObject` for the view lifetime;
+- `@ObservedObject` observes an externally owned object;
+- `@EnvironmentObject` retrieves an object supplied through the environment.
 
-- Use `@FocusState private var isFocused: Bool` when the view has a single focusable field.
-- Use a `Hashable` enum optional value for multiple fields, for better readability and type safety.
+Do not migrate legacy wrappers solely for style if compatibility constraints require them.
 
-### Single Field: Bool
+## Focus
 
-```swift
-@FocusState private var isFocused: Bool
+Use `@FocusState` for focus controlled by SwiftUI.
 
-TextField("Email", text: $email)
-    .focused($isFocused)
-    .onAppear { isFocused = true }
-```
+- Boolean state is fine for one focusable field.
+- An optional enum usually scales better for several fields.
 
-### Multiple Fields: Enum (Preferred)
+Keep focus identity stable and avoid coupling business state to keyboard focus unless the interaction requires it.
 
-Use a `Hashable` enum optional focus value when a view manages multiple fields.
+## Environment
 
-```swift
-enum Field: Hashable { case name, email, password }
-@FocusState private var focusedField: Field?
+Use environment values for dependencies/configuration that naturally flow through a view subtree.
 
-TextField("Name", text: $name)
-    .focused($focusedField, equals: .name)
-TextField("Email", text: $email)
-    .focused($focusedField, equals: .email)
-```
+Prefer `@Entry` for custom environment/container values when the project's toolchain supports it. Avoid environment as a service locator for arbitrary mutable global state.
 
-Set `focusedField = .email` to move focus programmatically; set `nil` to dismiss the keyboard.
+## Derived State
 
-## @StateObject vs @ObservedObject (Legacy - Pre-iOS 17)
+Do not store values that can be cheaply derived from another source of truth unless caching is intentional and invalidation is defined.
 
-**Note**: Always prefer `@Observable` with `@State` for iOS 17+.
+Examples to derive rather than duplicate:
 
-The key distinction is **ownership**: `@StateObject` when the view **creates and owns** the object; `@ObservedObject` when the view **receives** it from outside.
+- filtered/sorted projections for small collections;
+- booleans computed from existing state;
+- display formatting that is cheap and deterministic.
 
-```swift
-// View creates it → @StateObject
-@StateObject private var viewModel = MyViewModel()
+For expensive derivations, move work outside `body` and cache at an appropriate ownership layer.
 
-// View receives it → @ObservedObject
-@ObservedObject var viewModel: MyViewModel
-```
+## Nested Models
 
-**Never** create an `ObservableObject` inline with `@ObservedObject` -- it recreates the instance on every view update.
+Observation can track nested observable dependencies more precisely than older `ObservableObject` chains, but ownership should still be explicit. Avoid deeply nested mutable graphs when updates and lifetimes become difficult to reason about.
 
-### @StateObject instantiation in View's initializer
+## Common Failures
 
-Prefer storing the `@StateObject` in the parent view and passing it down. If you must create one in a custom initializer, pass the expression directly to `StateObject(wrappedValue:)` so the `@autoclosure` prevents redundant allocations:
+- incoming value stored as `@State` and then failing to update;
+- using `@Binding` for read-only configuration;
+- using `@StateObject` for an object owned by a parent;
+- shadowing one source of truth with a second synchronized copy;
+- putting broad application state in environment only to avoid passing dependencies;
+- performing network or persistence work from property access/body recomputation.
 
-```swift
-// Inside a View's init(movie:):
-// WRONG — assigning to a local first defeats @autoclosure
-let vm = MovieDetailsViewModel(movie: movie)
-_viewModel = StateObject(wrappedValue: vm)
+## Decision Guide
 
-// CORRECT — inline expression defers creation
-_viewModel = StateObject(wrappedValue: MovieDetailsViewModel(movie: movie))
-```
+| Need | Prefer |
+|---|---|
+| local value/source of truth | `@State` |
+| child edits parent-owned value | `@Binding` |
+| observable model owned by view | `@State` + `@Observable` on modern toolchains |
+| injected observable needs bindings | `@Bindable` |
+| dependency/configuration down subtree | `@Environment` |
+| pre-Observation object owned by view | `@StateObject` |
+| pre-Observation injected object | `@ObservedObject` |
+| focus state | `@FocusState` |
 
-**Modern Alternative**: Use `@Observable` with `@State` instead.
+## Verification
 
-## Don't Pass Values as @State
-
-**Critical**: Never declare passed values as `@State` or `@StateObject`. They only accept an initial value and ignore subsequent updates from the parent.
-
-```swift
-// WRONG - child ignores parent updates
-struct ChildView: View {
-    @State var item: Item  // Shows initial value forever!
-    var body: some View { Text(item.name) }
-}
-
-// CORRECT - child receives updates
-struct ChildView: View {
-    let item: Item  // Or @Binding if child needs to modify
-    var body: some View { Text(item.name) }
-}
-```
-
-**Prevention**: Always mark `@State` and `@StateObject` as `private`. This prevents them from appearing in the generated initializer.
-
-## @Bindable (iOS 17+)
-
-Use when receiving an `@Observable` object from outside and needing bindings:
-
-```swift
-@Observable
-final class UserModel {
-    var name = ""
-    var email = ""
-}
-
-struct ParentView: View {
-    @State private var user = UserModel()
-
-    var body: some View {
-        EditUserView(user: user)
-    }
-}
-
-struct EditUserView: View {
-    @Bindable var user: UserModel  // Received from parent, needs bindings
-
-    var body: some View {
-        Form {
-            TextField("Name", text: $user.name)
-            TextField("Email", text: $user.email)
-        }
-    }
-}
-```
-
-## let vs var for Passed Values
-
-### Use `let` for read-only display
-
-```swift
-struct ProfileHeader: View {
-    let username: String
-    let avatarURL: URL
-
-    var body: some View {
-        HStack {
-            AsyncImage(url: avatarURL)
-            Text(username)
-        }
-    }
-}
-```
-
-### Use `var` when reacting to changes with `.onChange()`
-
-```swift
-struct ReactiveView: View {
-    var externalValue: Int  // Watch with .onChange()
-    @State private var displayText = ""
-
-    var body: some View {
-        Text(displayText)
-            .onChange(of: externalValue) { oldValue, newValue in
-                displayText = "Changed from \(oldValue) to \(newValue)"
-            }
-    }
-}
-```
-
-## Environment and Preferences
-
-### @Environment
-
-Access environment values provided by SwiftUI or parent views:
-
-```swift
-struct MyView: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        Button("Done") { dismiss() }
-            .foregroundStyle(colorScheme == .dark ? .white : .black)
-    }
-}
-```
-
-### Custom Environment Values with @Entry
-
-Use the `@Entry` macro (Xcode 16+, backward compatible to iOS 13) to define custom environment values without boilerplate:
-
-```swift
-extension EnvironmentValues {
-    @Entry var accentTheme: Theme = .default
-}
-
-// Inject
-ContentView()
-    .environment(\.accentTheme, customTheme)
-
-// Access
-struct ThemedView: View {
-    @Environment(\.accentTheme) private var theme
-}
-```
-
-The `@Entry` macro replaces the manual `EnvironmentKey` conformance pattern. It also works with `TransactionValues`, `ContainerValues`, and `FocusedValues`.
-
-### @Environment with @Observable (iOS 17+ - Preferred)
-
-**Always prefer this pattern** for sharing state through the environment:
-
-```swift
-@Observable
-@MainActor
-final class AppState {
-    var isLoggedIn = false
-}
-
-// Inject
-ContentView()
-    .environment(AppState())
-
-// Access
-struct ChildView: View {
-    @Environment(AppState.self) private var appState
-}
-```
-
-### @EnvironmentObject (Legacy - Pre-iOS 17)
-
-Legacy pattern: inject with `.environmentObject(AppState())`, access with `@EnvironmentObject var appState: AppState`. Prefer `@Observable` with `@Environment` instead.
-
-## Decision Flowchart
-
-```
-Is this value owned by this view?
-├─ YES: Is it a simple value type?
-│       ├─ YES → @State private var
-│       └─ NO (class):
-│           ├─ Use @Observable → @State private var (mark class @MainActor)
-│           └─ Legacy ObservableObject → @StateObject private var
-│
-└─ NO (passed from parent):
-    ├─ Does child need to MODIFY it?
-    │   ├─ YES → @Binding var
-    │   └─ NO: Does child need BINDINGS to its properties?
-    │       ├─ YES (@Observable) → @Bindable var
-    │       └─ NO: Does child react to changes?
-    │           ├─ YES → var + .onChange()
-    │           └─ NO → let
-    │
-    └─ Is it a legacy ObservableObject from parent?
-        └─ YES → @ObservedObject var (consider migrating to @Observable)
-```
-
-## State Privacy Rules
-
-**All view-owned state should be `private`:**
-
-```swift
-// Correct - clear what's created vs passed
-struct MyView: View {
-    // Created by view - private
-    @State private var isExpanded = false
-    @State private var viewModel = ViewModel()
-    @AppStorage("theme") private var theme = "light"
-    @Environment(\.colorScheme) private var colorScheme
-    
-    // Passed from parent - not private
-    let title: String
-    @Binding var isSelected: Bool
-    @Bindable var user: User
-    
-    var body: some View {
-        // ...
-    }
-}
-```
-
-**Why**: This makes dependencies explicit and improves code completion for the generated initializer.
-
-## Avoid Nested ObservableObject
-
-**Note**: This limitation only applies to `ObservableObject`. `@Observable` fully supports nested observed objects.
-
-SwiftUI can't track changes through nested `ObservableObject` properties. Workaround: pass the nested object directly to child views as `@ObservedObject`. With `@Observable`, nesting works automatically.
-
-## Key Principles
-
-1. **Always prefer `@Observable` over `ObservableObject`** for new code
-2. **Mark `@Observable` classes with `@MainActor` for thread safety (unless using default actor isolation)`**
-3. Use `@State` with `@Observable` classes (not `@StateObject`)
-4. Use `@Bindable` for injected `@Observable` objects that need bindings
-5. **Always mark `@State` and `@StateObject` as `private`**
-6. **Never declare passed values as `@State` or `@StateObject`**
-7. With `@Observable`, nested objects work fine; with `ObservableObject`, pass nested objects directly to child views
-8. **Always add `@ObservationIgnored` to property wrappers** (e.g., `@AppStorage`, `@SceneStorage`, `@Query`) inside `@Observable` classes — they conflict with the macro's property transformation
+Change the upstream value, child value, view identity, and navigation/presentation lifetime to verify the chosen owner behaves correctly. For unexpected refreshes, use SwiftUI update diagnostics and Instruments rather than adding wrappers speculatively.

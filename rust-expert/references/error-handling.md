@@ -6,21 +6,19 @@ Rust makes errors explicit through `Result<T, E>`. Every fallible operation retu
 
 | Context | Crate | Why |
 | --- | --- | --- |
-| Library | `thiserror` | Derive custom error types with `#[error]`, `#[from]`, `#[source]` |
-| Application | `anyhow` | Dynamic error type with `.context()` for rich error chains |
+| Library | typed errors (optionally `thiserror`) | stable matchable API and sources |
+| Application | contextual aggregation (optionally `anyhow`) | convenient error chains at application boundaries |
 
 ## Core Rules
 
-1. **Return `Result`, don't panic** — `panic!` is for bugs, not expected errors
-2. **Use `?` for clean propagation** — replaces verbose `match` chains
-3. **Never `.unwrap()` in production** — panics with no context
-4. **`.expect()` only for programming errors** — invariants that should never fail
-5. **Add context**: `.context("parsing config")` or `.with_context(|| format!(...))`
-6. **Error messages: lowercase, no trailing punctuation** — composable in chains
-7. **`#[from]` for automatic conversion** — eliminates manual `impl From<E>`
-8. **`#[source]` chains underlying errors** — enables `source()` traversal
-9. **Document with `# Errors`** — list all error conditions
-10. **Custom types over `Box<dyn Error>`** — callers can match on variants
+1. Return `Result` for recoverable failures; panic for violated invariants or unrecoverable programmer errors.
+2. Use `?` when propagation is clearer than an explicit `match`; handle locally when recovery or translation belongs there.
+3. Avoid `unwrap()` on input/runtime failure paths. It is reasonable in tests or where a nearby invariant makes failure impossible and that invariant is obvious.
+4. Use `expect()` when the message usefully documents such an invariant.
+5. Add context at boundaries where it helps diagnose what operation failed; avoid repeating the same context at every layer.
+6. Preserve underlying sources when callers or diagnostics benefit from the chain.
+7. Use typed errors for library contracts that callers need to inspect; dynamic aggregation can be appropriate in applications.
+8. Document public error conditions when they are part of the API contract.
 
 ## thiserror (Libraries)
 

@@ -1,184 +1,111 @@
-# Type Design (Structs & Interfaces)
+# Go Type and API Design
 
-## Interface Design
+Use this reference for interfaces, constructors, method sets, zero values, generics, and exported API shape.
 
-### Keep Interfaces Small
+## Start Concrete
 
-> "The bigger the interface, the weaker the abstraction." — Go Proverbs
+Prefer concrete types until an abstraction boundary is useful. Introduce an interface when callers need substitutability, testing boundaries, multiple implementations, or decoupling from an external dependency.
 
-Interfaces SHOULD have 1–3 methods. Compose larger contracts from small interfaces:
+Small interfaces are easier to satisfy and compose, but method count is not a hard rule. The right interface expresses one coherent capability.
 
-```go
-type Reader interface { Read(p []byte) (n int, err error) }
-type Writer interface { Write(p []byte) (n int, err error) }
-type ReadWriter interface { Reader; Writer }
-```
+## Define Interfaces Near Consumption
 
-### Define Where Consumed
+Interfaces often belong in the package that consumes the capability because that package knows the minimum behavior it needs.
 
-Interfaces MUST be defined where consumed, not where implemented:
+Provider-side interfaces are still reasonable when the abstraction itself is part of the public domain API (for example `io.Reader`). Avoid creating an interface solely because a concrete type exists.
 
-```go
-// package notification — defines only what it needs
-type Sender interface {
-    Send(to, body string) error
-}
+## Accept Interfaces, Return Useful Types
 
-type Service struct { sender Sender }
-```
+Accept the narrowest useful behavior at boundaries. Returning a concrete type is often simpler because callers retain its full capabilities.
 
-### Accept Interfaces, Return Structs
+Returning an interface can be appropriate when hiding implementations is itself part of the API contract. Treat “never return interfaces” as a heuristic, not a language rule.
 
-```go
-// ✓ Good — accepts interface, returns concrete
-func NewService(store UserStore) *Service { ... }
+## Zero Values
 
-// ✗ Bad — NEVER return interfaces from constructors
-func NewService(store UserStore) ServiceInterface { ... }
-```
+Design useful zero values where it is natural (`bytes.Buffer`, `sync.Mutex`).
 
-### Don't Create Prematurely
+Do not force a zero value to be usable when the type requires mandatory validated configuration, external resources, or invariants that cannot be represented safely. In those cases, a constructor is clearer.
 
-> "Don't design with interfaces, discover them."
+## Constructors
 
-Wait for 2+ implementations or a testability requirement before extracting an interface.
+Use constructors when initialization establishes invariants or dependencies.
 
-## Key Standard Library Interfaces
+- `New` is conventional when one primary exported type exists;
+- a more specific name is fine when several constructions are meaningful;
+- return an error only when construction can actually fail;
+- functional options are useful for a growing set of independent optional settings, not as a mandatory pattern for every constructor.
 
-| Interface | Package | Method |
-| --- | --- | --- |
-| `Reader` | `io` | `Read(p []byte) (n int, err error)` |
-| `Writer` | `io` | `Write(p []byte) (n int, err error)` |
-| `Closer` | `io` | `Close() error` |
-| `Stringer` | `fmt` | `String() string` |
-| `error` | builtin | `Error() string` |
-| `Handler` | `net/http` | `ServeHTTP(ResponseWriter, *Request)` |
-
-Honor canonical signatures — don't invent `ToString()` or `ReadData()`.
-
-## Compile-Time Interface Check
-
-```go
-var _ io.ReadWriter = (*MyBuffer)(nil)
-```
-
-Zero cost at runtime. Catches broken implementations at build time.
-
-## Type Assertions & Type Switches
-
-```go
-// ✓ Safe — comma-ok form
-s, ok := val.(string)
-if !ok { /* handle */ }
-
-// ✗ Bad — panics on mismatch
-s := val.(string)
-
-// Type switch for dynamic dispatch
-switch v := val.(type) {
-case string:  fmt.Println(v)
-case int:     fmt.Println(v * 2)
-default:      fmt.Printf("unexpected type %T\n", v)
-}
-```
-
-### Optional Behavior
-
-```go
-if f, ok := w.(Flusher); ok {
-    return f.Flush()
-}
-```
-
-## Struct Embedding
-
-Embedding promotes inner type's methods — composition, not inheritance:
-
-```go
-// Embed — Server exposes all http.Handler methods
-type Server struct { http.Handler }
-
-// Named field — only uses store internally
-type Server struct { store *DataStore }
-```
-
-| Use | When |
-| --- | --- |
-| **Embed** | Full API promotion — outer type "is a" enhanced version |
-| **Named field** | Internal dependency — outer type "has a" dependency |
-
-## Dependency Injection
-
-```go
-type UserStore interface {
-    FindByID(ctx context.Context, id string) (*User, error)
-}
-
-type UserService struct { store UserStore }
-
-func NewUserService(store UserStore) *UserService {
-    return &UserService{store: store}
-}
-```
-
-## Struct Field Tags
-
-Exported fields in serialized structs MUST have tags:
-
-```go
-type Order struct {
-    ID        string    `json:"id"         db:"id"`
-    UserID    string    `json:"user_id"    db:"user_id"`
-    Total     float64   `json:"total"      db:"total"`
-    CreatedAt time.Time `json:"created_at" db:"created_at"`
-    Internal  string    `json:"-"          db:"-"`
-}
-```
+Avoid options that make invalid combinations easy to express; a config struct or separate constructors may be clearer.
 
 ## Pointer vs Value Receivers
 
-| Pointer `(s *Server)` | Value `(s Server)` |
-| --- | --- |
-| Modifies receiver | Small, immutable receiver |
-| Contains `sync.Mutex` | Basic type (int, string) |
-| Large struct | Read-only accessor |
-| Consistency: if any uses pointer, all should | Map/function values (reference types) |
+Use pointer receivers when methods mutate the receiver, the type is large/noncopyable, contains synchronization state, or identity matters.
 
-## Preventing Struct Copies with noCopy
+Value receivers are natural for small immutable/value-semantic types.
 
-```go
-type noCopy struct{}
-func (*noCopy) Lock()   {}
-func (*noCopy) Unlock() {}
+Consistency matters, but a type can legitimately have different method-set constraints. Do not convert receivers mechanically only to make them uniform.
 
-type ConnPool struct {
-    noCopy noCopy
-    mu     sync.Mutex
-    conns  []*Conn
-}
-// go vet reports error if ConnPool is copied
-```
+## Exported Types
 
-## Avoid `any` When Specific Types Work
+Keep exported surface area small and stable.
 
-```go
-// ✗ Bad — loses type safety
-func Contains(slice []any, target any) bool { ... }
+- expose fields when direct mutation is intentionally part of the API;
+- hide fields when invariants must be maintained;
+- use methods for behavior, not Java-style getters/setters by default;
+- avoid exporting concrete implementation details that make future change difficult.
 
-// ✓ Good — generic, type-safe (Go 1.18+)
-func Contains[T comparable](slice []T, target T) bool { ... }
-```
+Serialized structs need tags only for formats whose default field names/behavior do not match the intended wire contract. Tags are not inherently required on every exported field.
 
-## Common Mistakes
+## Enums and Constants
 
-| Mistake | Fix |
-| --- | --- |
-| Large interfaces (5+ methods) | Split into 1–3 method interfaces, compose |
-| Defining interfaces in implementor package | Define where consumed |
-| Returning interfaces from constructors | Return concrete types |
-| Bare type assertions | Always use comma-ok |
-| Embedding when you only need a few methods | Use named field, delegate |
-| Missing field tags on serialized structs | Tag all exported fields |
-| Mixing pointer and value receivers | Pick one, be consistent |
-| Using `any` for type-safe operations | Use generics |
-| Premature interface with single implementation | Start concrete, extract later |
+Use named integer/string types plus constants when they make invalid mixing harder.
+
+A meaningful zero value is helpful, but an `Unknown` zero member is not universally required. Choose zero semantics based on whether “unset/unknown” is a real state.
+
+## Generics
+
+Use generics when one algorithm/data structure genuinely works over a family of types and avoids duplication without obscuring intent.
+
+Prefer the weakest constraint that expresses required operations. Do not introduce a custom constraint hierarchy when `any`, `comparable`, or `cmp.Ordered` is enough.
+
+### Go 1.27 Generic Methods
+
+When the module targets Go 1.27+, methods can declare their own type parameters.
+
+Use a generic method when the operation naturally belongs to the receiver and the method form improves the API. Keep a package-level generic function when it is conceptually independent or better for compatibility/discoverability.
+
+Interface methods still cannot declare their own type parameters; consider a generic type/interface shape or function instead.
+
+## Type Aliases vs Defined Types
+
+Use a defined type when you want a distinct method set or type-safety boundary. Use an alias when two names should denote the same type for migration/organization.
+
+Do not create newtypes for every primitive if they add ceremony without preventing mistakes.
+
+## Composition
+
+Prefer embedding/composition when it exposes the right behavior, but be cautious in public structs: embedding promotes methods/fields and can unintentionally expand the API surface.
+
+## Compile-Time Interface Assertions
+
+`var _ Interface = (*Type)(nil)` is useful when conformance is intentional but not otherwise obvious from a nearby assignment/return. It is not needed for every implementation.
+
+## Common Failures
+
+- interfaces invented before a consumer needs abstraction;
+- giant “service” interfaces that force unrelated mocks;
+- functional options for two mandatory fields;
+- exposing mutable fields that bypass invariants;
+- returning interface only to hide a type callers actually need;
+- generic helpers that are harder to understand than two simple functions;
+- raising minimum Go version for generic-method style without API benefit.
+
+## Review Questions
+
+1. What invariant/abstraction does this type represent?
+2. Is ownership/mutability clear?
+3. Could the exported surface be smaller?
+4. Does the zero value have sensible semantics, or should construction be explicit?
+5. Is an interface required by a consumer/domain boundary?
+6. Do generics simplify real duplication?
+7. Will this API remain evolvable without breaking callers?

@@ -1,535 +1,121 @@
 # Core Data and Swift Concurrency
 
-Use this when:
+Use this reference when Core Data contexts, managed objects, actors, or Sendable diagnostics interact.
 
-- You need to use Core Data with async/await or actors.
-- `NSManagedObject` instances are crossing context or actor boundaries.
-- You are resolving default `@MainActor` isolation conflicts with generated NSManagedObject subclasses.
+## Core Rule
 
-Skip this file if:
+`NSManagedObject` instances are tied to their managed-object context and are not general-purpose Sendable values.
 
-- The issue is general actor isolation, not Core Data specific. Use `actors.md`.
-- You need general Sendable guidance. Use `sendable.md`.
+Do not pass live managed objects between actors/contexts. Cross boundaries with:
 
-## Core Principles
+- `NSManagedObjectID`;
+- immutable Sendable DTO/value snapshots;
+- stable domain identifiers that can be re-fetched in the destination context.
 
-### Thread safety still matters
+## Context Ownership
 
-Core Data's thread safety rules don't change with Swift Concurrency:
-- Can't pass `NSManagedObject` between threads
-- Must access objects on their context's thread
-- `NSManagedObjectID` is thread-safe (can pass around)
+Treat each managed-object context as an isolation domain with a clear owner.
 
-### NSManagedObject cannot be Sendable
+Use Core Data's context APIs to perform work on the context's expected executor/queue. Do not access managed object properties from arbitrary tasks because the compiler cannot make Core Data's queue confinement disappear.
 
-```swift
-@objc(Article)
-public class Article: NSManagedObject {
-    @NSManaged public var title: String // ❌ Mutable, can't be Sendable
-}
-```
+## Main-Queue Context
 
-**Don't use `@unchecked Sendable`** - hides warnings without fixing safety.
+A view context used directly by UI is naturally main-actor adjacent. Keep UI-facing mutations/read observation there when that matches the app architecture.
 
-## Available Async APIs
+Do not put expensive import/transform work on the main context just because the final UI update is main-actor owned.
 
-### Context perform
+## Background Work
 
-```swift
-extension NSManagedObjectContext {
-    func perform<T>(
-        schedule: ScheduledTaskType = .immediate,
-        _ block: @escaping () throws -> T
-    ) async rethrows -> T
-}
-```
+For imports, batch updates, or expensive persistence work:
 
-### What's missing
+1. create/use a background context according to the persistent container architecture;
+2. pass Sendable input values or object IDs into the operation;
+3. fetch/create managed objects inside that context;
+4. save there;
+5. merge/observe changes through the container/context mechanisms already used by the app.
 
-No async alternative for:
-```swift
-func loadPersistentStores(
-    completionHandler: @escaping (NSPersistentStoreDescription, Error?) -> Void
-)
-```
+Never transfer the newly fetched managed object back to another actor as the result. Return an ID or value snapshot.
 
-Must bridge manually (see below).
+## `perform` / Async APIs
 
-## Data Access Objects (DAO)
+Use the context's async-capable `perform` APIs where available instead of manually dispatching to queues around Core Data.
 
-Thread-safe value types representing managed objects.
+Keep the closure focused on context-bound work. Do not suspend arbitrarily while holding assumptions about mutable managed-object state unless the API/context model supports it and you revalidate afterward.
 
-### Pattern
+## Actors Around Persistence
+
+An actor can own a persistence service, but it does not make a managed object Sendable.
+
+A good persistence actor/service exposes Sendable inputs/outputs and keeps context/object access internal.
+
+Example API shape:
 
 ```swift
-// Managed object (not Sendable)
-@objc(Article)
-public class Article: NSManagedObject {
-    @NSManaged public var title: String?
-    @NSManaged public var timestamp: Date?
-}
-
-// DAO (Sendable)
-struct ArticleDAO: Sendable, Identifiable {
-    let id: NSManagedObjectID
-    let title: String
-    let timestamp: Date
-    
-    init?(managedObject: Article) {
-        guard let title = managedObject.title,
-              let timestamp = managedObject.timestamp else {
-            return nil
-        }
-        self.id = managedObject.objectID
-        self.title = title
-        self.timestamp = timestamp
-    }
+actor Store {
+    func loadUser(id: UUID) async throws -> UserSnapshot
+    func save(_ draft: UserDraft) async throws
 }
 ```
 
-### Benefits
-
-- **Sendable**: Safe to pass across isolation domains
-- **Immutable**: No accidental mutations
-- **Clear API**: Explicit data transfer
-
-### Drawbacks
-
-- **Requires rewrite**: All fetch/mutation logic
-- **Boilerplate**: DAO for each entity
-- **Complexity**: Additional layer of abstraction
-
-## Working Without DAOs
-
-Pass only `NSManagedObjectID` between contexts.
-
-### Basic pattern
-
-```swift
-@MainActor
-func fetchArticle(id: NSManagedObjectID) -> Article? {
-    viewContext.object(with: id) as? Article
-}
-
-func processInBackground(articleID: NSManagedObjectID) async throws {
-    let backgroundContext = container.newBackgroundContext()
-    try await backgroundContext.perform {
-        guard let article = backgroundContext.object(with: articleID) as? Article else {
-            return
-        }
-        // Process article
-        try backgroundContext.save()
-    }
-}
-```
-
-### NSManagedObjectID is Sendable
-
-```swift
-// Safe to pass between tasks
-let articleID = article.objectID
-
-Task {
-    await processInBackground(articleID: articleID)
-}
-```
-
-## Bridging Closures to Async
-
-### Load persistent stores
-
-```swift
-extension NSPersistentContainer {
-    func loadPersistentStores() async throws {
-        try await withCheckedThrowingContinuation { continuation in
-            self.loadPersistentStores { description, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: ())
-                }
-            }
-        }
-    }
-}
-
-// Usage
-try await container.loadPersistentStores()
-```
-
-## Simple CoreDataStore Pattern
-
-Enforce isolation at API level:
-
-```swift
-nonisolated struct CoreDataStore {
-    static let shared = CoreDataStore()
-    
-    let persistentContainer: NSPersistentContainer
-    private var viewContext: NSManagedObjectContext {
-        persistentContainer.viewContext
-    }
-    
-    private init() {
-        persistentContainer = NSPersistentContainer(name: "MyApp")
-        persistentContainer.viewContext.automaticallyMergesChangesFromParent = true
-        
-        Task { [persistentContainer] in
-            try? await persistentContainer.loadPersistentStores()
-        }
-    }
-    
-    // View context operations (main thread)
-    @MainActor
-    func perform(_ block: (NSManagedObjectContext) throws -> Void) rethrows {
-        try block(viewContext)
-    }
-    
-    // Background operations
-    @concurrent
-    func performInBackground<T>(
-        _ block: @escaping (NSManagedObjectContext) throws -> T
-    ) async rethrows -> T {
-        let context = persistentContainer.newBackgroundContext()
-        return try await context.perform {
-            try block(context)
-        }
-    }
-}
-```
-
-### Usage
-
-```swift
-// Main thread operations
-@MainActor
-func loadArticles() throws -> [Article] {
-    try CoreDataStore.shared.perform { context in
-        let request = Article.fetchRequest()
-        return try context.fetch(request)
-    }
-}
-
-// Background operations
-func deleteAll() async throws {
-    try await CoreDataStore.shared.performInBackground { context in
-        let request = Article.fetchRequest()
-        let articles = try context.fetch(request)
-        articles.forEach { context.delete($0) }
-        try context.save()
-    }
-}
-```
-
-### Why this pattern works
-
-- **@MainActor**: Enforces view context on main thread
-- **@concurrent**: Forces background execution
-- **Compile-time safety**: Wrong isolation = error
-- **Simple**: No custom executors needed
-
-## Custom Actor Executor (Advanced)
-
-**Note**: Usually not needed. Consider simple pattern first.
-
-### Implementation
-
-```swift
-final class NSManagedObjectContextExecutor: @unchecked Sendable, SerialExecutor {
-    private let context: NSManagedObjectContext
-    
-    init(context: NSManagedObjectContext) {
-        self.context = context
-    }
-    
-    func enqueue(_ job: consuming ExecutorJob) {
-        let unownedJob = UnownedJob(job)
-        let executor = asUnownedSerialExecutor()
-        
-        context.perform {
-            unownedJob.runSynchronously(on: executor)
-        }
-    }
-    
-    func asUnownedSerialExecutor() -> UnownedSerialExecutor {
-        UnownedSerialExecutor(ordinary: self)
-    }
-}
-```
-
-### Actor usage
-
-```swift
-actor CoreDataStore {
-    let persistentContainer: NSPersistentContainer
-    nonisolated let modelExecutor: NSManagedObjectContextExecutor
-    
-    nonisolated var unownedExecutor: UnownedSerialExecutor {
-        modelExecutor.asUnownedSerialExecutor()
-    }
-    
-    private init() {
-        persistentContainer = NSPersistentContainer(name: "MyApp")
-        let context = persistentContainer.newBackgroundContext()
-        modelExecutor = NSManagedObjectContextExecutor(context: context)
-    }
-    
-    func deleteAll<T: NSManagedObject>(
-        using request: NSFetchRequest<T>
-    ) throws {
-        let objects = try context.fetch(request)
-        objects.forEach { context.delete($0) }
-        try context.save()
-    }
-}
-```
-
-### Drawbacks
-
-- **Hidden complexity**: Executor details obscure Core Data
-- **Forces concurrency**: Even for main thread operations
-- **Not simpler**: More code than `perform { }`
-- **Error prone**: Easy to use wrong context
-
-**Recommendation**: Use simple pattern instead.
-
-## Default MainActor Isolation
-
-### Problem with auto-generated code
-
-When default isolation set to `@MainActor`, auto-generated managed objects conflict:
-
-```swift
-// Auto-generated (can't modify)
-class Article: NSManagedObject {
-    // Inherits @MainActor, conflicts with NSManagedObject
-}
-```
-
-**Error**: `Main actor-isolated initializer has different actor isolation from nonisolated overridden declaration`
-
-### Solution: Manual code generation
-
-1. Set entity to "Manual/None" code generation
-2. Generate class definitions
-3. Mark as `nonisolated`:
-
-```swift
-nonisolated class Article: NSManagedObject {
-    @NSManaged public var title: String?
-    @NSManaged public var timestamp: Date?
-}
-
-```
-
-**Benefit**: Full control over isolation.
-
-## Common Patterns
-
-### Fetch on main thread
-
-```swift
-@MainActor
-func fetchArticles() throws -> [Article] {
-    let request = Article.fetchRequest()
-    return try viewContext.fetch(request)
-}
-```
-
-### Background save
-
-```swift
-func saveInBackground() async throws {
-    let context = container.newBackgroundContext()
-    try await context.perform {
-        let article = Article(context: context)
-        article.title = "New Article"
-        try context.save()
-    }
-}
-```
-
-### Pass ID, fetch in context
-
-```swift
-@MainActor
-func displayArticle(id: NSManagedObjectID) {
-    guard let article = viewContext.object(with: id) as? Article else {
-        return
-    }
-    // Use article
-}
-
-func processArticle(id: NSManagedObjectID) async throws {
-    try await CoreDataStore.shared.performInBackground { context in
-        guard let article = context.object(with: id) as? Article else {
-            return
-        }
-        // Process article
-        try context.save()
-    }
-}
-```
-
-### Batch operations
-
-```swift
-@concurrent
-func deleteAllArticles() async throws {
-    try await CoreDataStore.shared.performInBackground { context in
-        let request = NSFetchRequest<NSFetchRequestResult>(entityName: "Article")
-        let deleteRequest = NSBatchDeleteRequest(fetchRequest: request)
-        try context.execute(deleteRequest)
-    }
-}
-```
-
-## SwiftUI Integration
-
-### Environment injection
-
-```swift
-@main
-struct MyApp: App {
-    let persistentContainer = NSPersistentContainer(name: "MyApp")
-    
-    var body: some Scene {
-        WindowGroup {
-            ContentView()
-                .environment(\.managedObjectContext, persistentContainer.viewContext)
-        }
-    }
-}
-```
-
-### View usage
-
-```swift
-struct ContentView: View {
-    @Environment(\.managedObjectContext) private var viewContext
-    @FetchRequest(
-        sortDescriptors: [NSSortDescriptor(keyPath: \Article.timestamp, ascending: true)]
-    ) private var articles: FetchedResults<Article>
-    
-    var body: some View {
-        List(articles) { article in
-            Text(article.title ?? "")
-        }
-    }
-}
-```
-
-## Best Practices
-
-1. **Pass NSManagedObjectID only** - never managed objects
-2. **Use perform { }** - don't access context directly
-3. **@MainActor for view context** - enforce main thread
-4. **@concurrent for background** - force background execution
-5. **Manual code generation** - control isolation
-6. **Keep it simple** - avoid custom executors unless needed
-7. **Enable Core Data debugging** - catch thread violations
-8. **Merge changes automatically** - `automaticallyMergesChangesFromParent = true`
-9. **Use background contexts** - for heavy operations
-10. **Test with Thread Sanitizer** - catch violations early
-
-## Debugging
-
-### Enable Core Data concurrency debugging
-
-```swift
-// Launch argument
--com.apple.CoreData.ConcurrencyDebug 1
-```
-
-Crashes immediately on thread violations.
-
-### Thread Sanitizer
-
-Enable in scheme settings to catch data races.
-
-### Assertions
-
-```swift
-@MainActor
-func fetchArticles() -> [Article] {
-    assert(Thread.isMainThread)
-    // Fetch from viewContext
-}
-```
-
-## Decision Tree
-
-```
-Need to access Core Data?
-├─ UI/View context?
-│  └─ Use @MainActor + viewContext
-│
-├─ Background operation?
-│  ├─ Quick operation? → perform { } on background context
-│  └─ Batch operation? → NSBatchDeleteRequest/NSBatchUpdateRequest
-│
-├─ Pass between contexts?
-│  └─ Use NSManagedObjectID only
-│
-└─ Need Sendable type?
-   ├─ Can refactor? → Use DAO pattern
-   └─ Can't refactor? → Pass NSManagedObjectID
-```
-
-## Migration Strategy
-
-### For existing projects
-
-1. **Enable manual code generation** for all entities
-2. **Mark entities as nonisolated** if using default @MainActor
-3. **Wrap Core Data access** in CoreDataStore
-4. **Use @MainActor** for view context operations
-5. **Use @concurrent** for background operations
-6. **Pass NSManagedObjectID** between contexts
-7. **Test with debugging enabled**
-
-### For new projects
-
-1. **Start with simple pattern** (CoreDataStore)
-2. **Manual code generation** from the start
-3. **Consider DAOs** if heavy cross-context usage
-4. **Enable strict concurrency** early
-
-## Common Mistakes
-
-### ❌ Passing managed objects
-
-```swift
-func process(article: Article) async {
-    // ❌ Article not Sendable
-}
-```
-
-### ❌ Accessing context from wrong thread
-
-```swift
-func background() async {
-    let articles = viewContext.fetch(request) // ❌ Not on main thread
-}
-```
-
-### ❌ Using @unchecked Sendable
-
-```swift
-extension Article: @unchecked Sendable {} // ❌ Doesn't make it safe
-```
-
-### ❌ Not using perform
-
-```swift
-func save() async {
-    backgroundContext.save() // ❌ Not on context's thread
-}
-```
-
-## Common Mistakes Agents Make
-
-- **Passing `NSManagedObject` instances across actors**: Always transfer `NSManagedObjectID` or a Sendable value snapshot instead.
-- **Using `@unchecked Sendable` on `NSManagedObject`**: This does not make it thread-safe. The object is still bound to its context's queue.
-- **Skipping `perform { }`**: All background context access must go through `perform` or `performAndWait`.
-- **Accessing `viewContext` from a background task**: The view context belongs to the main actor; access it only from `@MainActor`-isolated code.
+The internal context can be created/used according to Core Data requirements without leaking `NSManagedObject` across the API boundary.
+
+## Custom Executors
+
+Advanced integrations can align actor execution with an existing context/queue using custom executors. Use this only when there is a concrete architecture need and you understand both Core Data confinement and Swift executor semantics.
+
+A simpler service that calls context `perform` is usually easier to maintain.
+
+## SwiftUI
+
+When SwiftUI observes Core Data directly through framework integrations, preserve the framework's lifecycle rather than wrapping each managed object in extra task/actor layers.
+
+For asynchronous work triggered by a view:
+
+- capture stable IDs/value inputs;
+- perform persistence work behind the persistence boundary;
+- update UI state with returned Sendable values or let Core Data observation publish changes.
+
+## Faults and Snapshots
+
+Reading a managed object's property can fire a fault, so converting to a DTO is context-bound work. Build the snapshot while on the correct context, then transfer the snapshot.
+
+Do not hold a managed object merely as a “read-only DTO”; its relationship/fault behavior still belongs to the context.
+
+## Batch Operations
+
+Batch insert/update/delete APIs can bypass ordinary managed-object lifecycle hooks. Their concurrency advantage does not remove merge/consistency requirements.
+
+Use them when dataset size justifies the trade-off and verify how changes become visible to active contexts.
+
+## Cancellation
+
+Long imports should check Swift task cancellation between meaningful batches. Core Data operations already submitted to a context may not be individually cancellable, so define the boundary at which work can safely stop.
+
+Avoid leaving partially applied in-memory state without either saving intentionally or rolling back/resetting according to the transaction design.
+
+## Common Diagnostics
+
+### Non-Sendable managed object crossing actor boundary
+
+Do not add `@unchecked Sendable` to the managed-object subclass. Pass `objectID` or a value snapshot.
+
+### Main-actor isolation around a context
+
+Decide whether the context is truly UI-owned. If persistence work is background, move the persistence boundary rather than marking the whole store `@MainActor`.
+
+### Legacy queue-based service mixed with actors
+
+Choose one clear ownership boundary. An actor service may internally call legacy context APIs, but callers should not need to understand both actor and dispatch-queue rules.
+
+## Common Failures
+
+- `@unchecked Sendable` on `NSManagedObject`;
+- returning managed objects from background actor APIs;
+- using `Task.detached` with a captured managed object/context;
+- assuming read-only access is safe on any executor;
+- doing large imports on the view/main context;
+- adding actors on top of contexts without clarifying which one owns mutation.
+
+## Verification
+
+Test fetch/save on the intended contexts, UI merge/observation, background imports, cancellation/partial failure, and object deletion/reset scenarios. Enable Core Data concurrency debugging during development when investigating confinement violations.

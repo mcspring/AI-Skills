@@ -1,168 +1,176 @@
-# Project Methodology
+# AI Project Methodology
 
-Task-model fit evaluation, pipeline architecture, structured output design, cost estimation, and production case studies.
+Use this reference when deciding whether an LLM/agent is appropriate, designing the first implementation, and setting up evaluations.
 
-## Task-Model Fit
+## Start With the Task
 
-Run every proposed task through these tables before writing code.
+Define before choosing architecture:
 
-### Proceed When
+- input and output;
+- what “correct” means;
+- acceptable latency/cost;
+- failure consequences;
+- data/tool access needed;
+- representative easy, normal, and adversarial cases.
 
-| Characteristic | Rationale |
-|----------------|-----------|
-| Synthesis across sources | LLMs combine multi-source information better than rule-based alternatives |
-| Subjective judgment with rubrics | Grading, classification with criteria maps naturally to language reasoning |
-| Natural language output | When the goal is human-readable text |
-| Error tolerance | Individual failures don't break the system |
-| Batch processing | No conversational state required between items |
-| Domain knowledge in training | Model already has relevant context |
+If success cannot be evaluated, prompt or model optimization will become guesswork.
 
-### Stop When
+## Validate Task–Model Fit
 
-| Characteristic | Rationale |
-|----------------|-----------|
-| Precise computation | Math, counting, exact algorithms unreliable |
-| Real-time requirements | LLM latency too high for sub-second responses |
-| Perfect accuracy required | Hallucination risk makes 100% impossible |
-| Proprietary data dependence | Model lacks necessary context |
-| Sequential dependencies | Each step compounds errors |
-| Deterministic output required | Same input must produce identical output |
+Prototype manually with real examples before building infrastructure.
 
-### Manual Prototype (Always Do This First)
-Copy one representative input into the model interface. Evaluate: Does the model have the knowledge? Can it produce the right format? What failure modes appear? This takes minutes and prevents hours of wasted work.
+Ask:
 
----
+- Can the model produce useful output with the information a real system can provide?
+- Which failures are model limitations versus missing context/tools?
+- Does deterministic code solve important parts more reliably?
+- Is human review required at consequential boundaries?
 
-## Pipeline Architecture
+Do not automate a task whose manual model workflow is already unreliable unless the system design directly addresses that failure.
 
-Structure as staged pipeline — only the Process stage is non-deterministic:
+## Use Models for Judgment, Code for Determinism
 
-```
-acquire → prepare → process → parse → render
-```
+Good model work:
 
-| Stage | Deterministic | Expensive | Key Property |
-|-------|---------------|-----------|--------------|
-| Acquire | Yes | Low | Fetch raw data from APIs/files/databases |
-| Prepare | Yes | Low | Transform into prompt format |
-| Process | **No** | **High** | Execute LLM calls |
-| Parse | Yes | Low | Extract structured data from responses |
-| Render | Yes | Low | Generate final outputs |
+- ambiguous classification;
+- synthesis and explanation;
+- extraction where source variation is high;
+- planning when next actions depend on observations;
+- natural-language transformation.
 
-### Design Principles
-- **Discrete**: Clear boundaries, debuggable independently
-- **Idempotent**: Re-running produces same results
-- **Cacheable**: Intermediate results persist to disk
-- **Independent**: Each stage runs separately
+Prefer deterministic code for:
 
-### File System as State Machine
+- validation;
+- arithmetic/accounting;
+- permissions;
+- state transitions;
+- parsing stable formats;
+- irreversible execution rules.
 
-```
-data/{batch_id}/{item_id}/
-  raw.json         # acquire complete
-  prompt.md        # prepare complete
-  response.md      # process complete
-  parsed.json      # parse complete
-```
+Combine them rather than forcing all logic into prompts.
 
-Check if item needs processing by checking output file existence. Re-run by deleting output + downstream files. Debug by reading intermediate files directly.
+## Smallest Architecture First
 
----
+Choose the simplest structure matching the task:
 
-## Structured Output Design
+### Direct model call
 
-Include in every structured prompt:
-1. **Section markers** — explicit headers parsers can match on
-2. **Format examples** — show exactly what output looks like
-3. **Rationale disclosure** — "I will be parsing this programmatically"
-4. **Constrained values** — enumerated options, score ranges, fixed formats
+For one bounded transformation with known context.
 
-Build parsers that handle variations: flexible regex, sensible defaults for missing sections, log failures rather than crash.
+### Pipeline
 
----
+For predictable stages such as acquire → prepare → model → validate → render.
 
-## Cost Estimation
+Make stages independently testable/idempotent when possible.
 
-```
-Total cost = (items × tokens_per_item × price_per_token) + 20–30% buffer
-```
+### Agent loop
 
-Estimate input tokens (prompt + context) and output tokens per item before starting. Track actual costs during development. If costs exceed estimates: reduce context via truncation, use smaller models for simpler items, cache partial results, parallelize for wall-clock time.
+Use when the model must inspect observations and choose the next tool/action dynamically.
 
-### Parallel Execution
-- Small batches (1–10): sequential fine
-- Medium (10–100): 5–15 workers, respect API rate limits
-- Large (100+): chunk with checkpoints, implement resume
+### Multi-agent
 
----
+Add only when parallelism, context isolation, specialization, or independent verification provides measurable value. See `multi-agent.md`.
 
-## Choosing Single vs Multi-Agent
+## Structured Outputs
 
-Default to single-agent pipelines for batch processing. Escalate to multi-agent only when:
-- Parallel exploration of different aspects is required
-- Task exceeds single context window capacity
-- Specialized sub-agents demonstrably improve quality on benchmarks
+When downstream code consumes model output, define a schema rather than parsing prose heuristically.
 
-See `multi-agent.md` for architecture patterns when multi-agent is justified.
+Validate the result and distinguish:
 
----
+- model refusal/failure;
+- schema/validation failure;
+- tool/data failure;
+- business-rule rejection.
 
-## Architectural Reduction
+Retry only failure modes likely to improve with retry or changed context.
 
-Start minimal, add complexity only when production evidence proves it necessary. More sophisticated tooling can constrain rather than enable model performance.
+## State and Resumability
 
-**Reduce when**: data layer well-documented, model has sufficient reasoning, specialized tools constraining rather than enabling, more time maintaining scaffolding than improving outcomes.
+Persist durable workflow state outside the model context:
 
-**Add complexity when**: data messy/undocumented, domain requires specialized knowledge, safety constraints must limit capabilities, operations genuinely benefit from structured workflows.
+- input/artifact IDs;
+- completed stages;
+- decisions requiring continuity;
+- tool side effects;
+- output/evaluation results.
 
-See `tool-design.md` § Architectural Reduction for detailed patterns and the Vercel d0 case study.
+Prefer idempotent stages and versioned artifacts so work can resume after interruption without replaying everything.
 
----
+## Evaluation Before Optimization
 
-## Case Studies
+Build a compact representative eval set early.
 
-### Karpathy HN Time Capsule
-- **Task**: Analyze 930 HN discussions with hindsight grading
-- **Pipeline**: fetch → prompt → analyze → parse → render, 15 parallel workers
-- **Result**: $58 total, ~1 hour, static HTML output
-- **Lessons**: manual validation first, file-system state, idempotent stages, agent-assisted development (3 hours to working code)
+Track metrics appropriate to the task:
 
-### Vercel d0 Architectural Reduction
-- **Task**: Text-to-SQL agent for internal analytics
-- **Before**: 17 tools, 80% success, 274s avg, ~102K tokens
-- **After**: 2 tools (bash + SQL), 100% success, 77s avg, ~61K tokens
-- **Lessons**: tools were constraining reasoning; good documentation replaces tool sophistication; build for future models
+- correctness/acceptance rate;
+- groundedness/evidence quality;
+- tool selection/action success;
+- latency;
+- tokens/tool cost per completed task;
+- retry/failure rate;
+- human correction rate.
 
-### Manus Context Engineering
-- **Task**: General-purpose consumer agent, 50+ tool calls
-- **Key patterns**: KV-cache optimization (10× cost difference cached vs uncached), append-only context, mask don't remove tools, filesystem as unlimited memory, todo.md recitation for attention, keep errors in context
-- **Lessons**: refactored framework 5 times; simple unopinionated designs adapt better to model improvements
+Include regression cases from real failures.
 
-### Anthropic Multi-Agent Research
-- **Task**: Complex topic research with parallel agents
-- **Architecture**: Orchestrator-worker, lead spawns subagents for parallel exploration
-- **Key finding**: 3 factors explain 95% of performance variance — token usage (80%), tool calls, model choice
-- **Token economics**: multi-agent ~15× baseline; requires high-value tasks to justify cost
+## Prompt and Context Iteration
 
----
+Change one meaningful variable at a time when diagnosing quality:
 
-## Iteration Principles
+1. missing/incorrect context;
+2. unclear goal/output contract;
+3. tool design/retrieval problems;
+4. model capability/routing;
+5. orchestration complexity.
 
-1. Plan for multiple refactoring cycles — no project gets architecture right first try
-2. Test across model generations to verify harness isn't limiting performance
-3. Keep architecture unopinionated so refactoring is cheap
-4. Build systems that benefit from model improvements rather than locking in limitations
-5. The Bitter Lesson: structures added for current limitations become constraints as models improve
+Do not compensate for poor context/tool contracts with increasingly long prompts.
 
----
+## Model Routing
 
-## Gotchas
+Use a smaller/faster model for a bounded stage only when evals demonstrate sufficient quality. Use stronger reasoning for tasks where errors or ambiguity justify the cost.
 
-1. **Skipping manual validation** — building automation before verifying model can do the task
-2. **Monolithic pipelines** — combining stages makes debugging/iteration difficult
-3. **Over-constraining models** — guardrails that helped weaker models become liabilities as capabilities improve
-4. **Ignoring costs until production** — token costs compound quickly at scale
-5. **Perfect parsing expectations** — LLMs don't follow format instructions perfectly; build robust parsers
-6. **Premature optimization** — adding caching/parallelization before basic pipeline works
-7. **Model version lock-in** — building pipelines that only work with one specific model
-8. **Evaluation-less deployment** — shipping without measuring output quality means regressions go undetected
+Avoid routing rules based only on token length or superficial task labels; measure end-to-end success.
+
+## Cost
+
+Estimate cost per completed task, including:
+
+- input/output tokens;
+- repeated context;
+- tool/search calls;
+- retries;
+- sub-agents;
+- failed runs.
+
+There is no universal single-agent or multi-agent multiplier. Production traces should determine the economics.
+
+## Human-in-the-Loop
+
+Place approval where consequences justify it:
+
+- irreversible external actions;
+- high-value financial/legal/security changes;
+- ambiguous changes with large blast radius;
+- publication/communication when organizational policy requires review.
+
+Do not insert human approval into harmless internal steps only because the workflow uses AI.
+
+## Production Readiness
+
+Before scaling, ensure:
+
+- representative evals run continuously;
+- tool permissions are least-privilege;
+- side effects are observable/idempotent where feasible;
+- prompts/models/tools are versioned;
+- failures expose enough state to recover;
+- sensitive data handling is defined;
+- usage/cost/latency can be measured.
+
+## Avoid
+
+- architecture-first design before proving task-model fit;
+- multi-agent orchestration because roles sound realistic;
+- vector databases/memory before a retrieval need exists;
+- treating one demo as an evaluation;
+- optimizing token count while retries increase;
+- hiding deterministic business logic inside prompts.

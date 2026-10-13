@@ -4,17 +4,16 @@ Prevents programmer mistakes — bugs, panics, and silent data corruption in nor
 
 ## Core Rules
 
-1. **Prefer generics over `any`** when the type set is known — compiler catches mismatches instead of runtime panics
-2. **Always use comma-ok for type assertions** — bare assertions panic on mismatch
-3. **Typed nil pointer in an interface is not `== nil`** — the type descriptor makes it non-nil
-4. **Writing to a nil map panics** — always initialize before use
-5. **`append` may reuse the backing array** — both slices share memory if capacity allows
-6. **Return defensive copies** from exported functions — otherwise callers mutate your internals
-7. **`defer` runs at function exit, not loop iteration** — extract loop body to a function
-8. **Integer conversions truncate silently** — `int64` to `int32` wraps without error
-9. **Float arithmetic is not exact** — use epsilon comparison or `math/big`
-10. **Design useful zero values** — nil map fields panic on first write; use lazy init
-11. **Use `sync.Once` for lazy init** — guarantees exactly-once even under concurrency
+1. Prefer static types/generics when they make invariants clearer; use `any` when dynamic values are genuinely part of the API.
+2. Use comma-ok type assertions when mismatch is an expected runtime possibility. A direct assertion is appropriate when mismatch represents a programmer invariant and panic is intentional.
+3. Remember that an interface containing a typed nil pointer is itself non-nil.
+4. Nil maps can be read but panic on writes; initialize before a write path that may see nil.
+5. `append` may reuse a backing array, so reason explicitly about aliasing when slices escape or are shared.
+6. Return defensive copies when callers must not mutate internal state; avoid copies when sharing/mutation is part of the contract.
+7. `defer` runs when the surrounding function returns, not at each loop iteration.
+8. Integer conversions can truncate/wrap; validate bounds when the source value is not already constrained.
+9. Floating-point equality depends on domain semantics; use tolerances, exact integer/fixed-point units, or `math/big` as the problem requires.
+10. Favor useful zero values and deliberate initialization. Use `sync.Once` only when exactly-once concurrent initialization is actually needed.
 
 ## Nil Safety
 
@@ -103,15 +102,14 @@ i32 := int32(val)
 ### Float comparison
 
 ```go
-// ✗ Bad — 0.1+0.2 == 0.3 is false
-// ✓ Good — epsilon comparison
-const epsilon = 1e-9
-math.Abs((0.1+0.2)-0.3) < epsilon
+// Choose tolerance from the domain/scale; one global epsilon is rarely universal.
+diff := math.Abs(got - want)
+ok := diff <= absTol || diff <= relTol*math.Max(math.Abs(got), math.Abs(want))
 ```
 
 ### Division by zero
 
-Integer division by zero panics. Float division produces `+Inf`/`-Inf`/`NaN`. Always guard with `if divisor == 0`.
+Integer division by zero panics. Float division produces `+Inf`/`-Inf`/`NaN`. Guard when zero is possible from the API/input domain; a redundant check is unnecessary when an invariant already proves nonzero.
 
 ## Resource Safety
 

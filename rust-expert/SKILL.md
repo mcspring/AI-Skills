@@ -46,6 +46,7 @@ For projects that can target recent stable Rust, consider Rust 2024 semantics an
 | Naming/docs | `references/naming-docs.md` |
 | Testing | `references/testing.md` |
 | Cargo/project tooling | `references/project-tooling.md` |
+| Edition/MSRV/version modernization | `references/modernization.md` |
 
 ## Verification
 

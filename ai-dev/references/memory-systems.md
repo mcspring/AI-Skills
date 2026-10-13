@@ -1,148 +1,78 @@
 # Memory Systems
 
-Memory layers, production framework comparison, retrieval strategies, temporal knowledge graphs, benchmarks, and consolidation.
+Memory is retrieval infrastructure for information that must outlive the active context. Start with the simplest durable representation that can be retrieved reliably; add vector or graph infrastructure only when evaluations show a need.
 
-## Core Principle
+## Decide What Deserves Memory
 
-Default to the simplest layer that meets retrieval needs. Benchmark evidence: **tool complexity matters less than reliable retrieval** — Letta's filesystem agents scored 74% on LoCoMo using basic file operations, beating Mem0's specialized tools at 68.5%.
+Store information when it is useful beyond the current turn/session, costly to reconstruct reliably, attributable to a source or event, and retrievable with a clear key, query, entity, or time boundary.
 
----
+Do not treat the transcript as memory by default. Summaries, decisions, facts, artifacts, and pointers are usually more useful than raw history.
 
 ## Memory Layers
 
-Pick the shallowest layer that satisfies persistence requirements. Each deeper layer adds infrastructure cost.
+| Layer | Good for | Typical implementation |
+|---|---|---|
+| Working | current reasoning/task state | active context / scratchpad |
+| Session | intermediate artifacts, checkpoints | files, KV state, database rows |
+| Long-term factual | durable preferences/domain facts | structured store + provenance |
+| Semantic retrieval | fuzzy topical recall over many records | embeddings/vector search |
+| Entity/relational | identity and relationship traversal | relational or graph model |
+| Temporal | facts whose truth changes over time | validity/event metadata or temporal graph |
 
-| Layer | Persistence | Implementation | When to Use |
-|-------|------------|----------------|-------------|
-| **Working** | Context window | Scratchpad in system prompt | Always — optimize positions |
-| **Short-term** | Session-scoped | File-system, in-memory cache | Intermediate results, conversation state |
-| **Long-term** | Cross-session | Key-value → graph DB | User preferences, domain knowledge |
-| **Entity** | Cross-session | Entity registry + properties | Identity tracking ("John Doe" = same person) |
-| **Temporal KG** | Cross-session + history | Graph with validity intervals | Facts that change, time-travel queries |
+Use the shallowest layer that passes retrieval evaluations.
 
-### Escalation Path
-1. **Prototype**: File-system memory (structured JSON + timestamps) — validates behavior before infrastructure
-2. **Scale**: Mem0 or vector store when semantic search and multi-tenant isolation needed
-3. **Complex reasoning**: Zep/Graphiti (temporal bi-model) or Cognee (multi-layer semantic graph) for relationship traversal
-4. **Full control**: Letta or Cognee when agent must self-manage memory
+## Retrieval Before Storage Complexity
 
----
-
-## Framework Landscape
-
-| Framework | Architecture | Best For | Trade-off |
-|-----------|-------------|----------|-----------|
-| **Mem0** | Vector store + graph, pluggable backends | Multi-tenant, fast integration | Less specialized for multi-agent |
-| **Zep/Graphiti** | Temporal KG, bi-temporal model | Enterprise relationship + temporal reasoning | Advanced features cloud-locked |
-| **Letta** | Self-editing memory, tiered storage | Full agent introspection, stateful services | Complex for simple use cases |
-| **Cognee** | Multi-layer semantic graph, customizable ECL pipeline | Evolving agent memory, multi-hop reasoning | Heavier ingest-time processing |
-| **LangMem** | Memory tools for LangGraph | Teams already on LangGraph | Tightly coupled to LangGraph |
-
-### Quick Start Examples
-
-**Mem0:**
-```python
-from mem0 import Memory
-m = Memory()
-m.add("User prefers dark mode and Python 3.12", user_id="alice")
-results = m.search("What theme does the user prefer?", user_id="alice")
-```
-
-**Graphiti (Zep's temporal KG):**
-```python
-from graphiti_core import Graphiti
-graphiti = Graphiti("bolt://localhost:7687", "neo4j", "password")
-await graphiti.add_episode(name="conv_42", episode_body="Alice moved to Berlin in January.", source=EpisodeType.message)
-results = await graphiti.search("Where does Alice live?")
-```
-
-**Cognee:**
-```python
-import cognee
-await cognee.add("./docs/")
-await cognee.cognify()
-await cognee.memify()
-results = await cognee.search(query_text="query", query_type=SearchType.GRAPH_COMPLETION)
-```
-
----
-
-## Benchmarks
-
-| System | DMR Accuracy | LoCoMo | HotPotQA (multi-hop) |
-|--------|-------------|--------|---------------------|
-| Cognee | — | — | Highest EM, F1, Correctness |
-| Zep (Temporal KG) | 94.8% | — | Mid-range |
-| Letta (filesystem) | — | 74.0% | — |
-| Mem0 | — | 68.5% | Lowest |
-| MemGPT | 93.4% | — | — |
-| Vector RAG baseline | ~60-70% | — | — |
-
-**Key takeaways**: Zep achieves 18.5% accuracy improvement on LongMemEval with 90% latency reduction. Cognee outperforms Mem0, Graphiti, LightRAG on multi-hop reasoning. Filesystem agents beat specialized tools on single-hop retrieval.
-
----
+A sophisticated store does not compensate for poor retrieval. Evaluate recall, precision, freshness, provenance, and latency/cost. Keep benchmark numbers tied to the exact dataset, framework version, embedding model, and retrieval configuration; do not encode cross-benchmark percentages as universal architecture rules.
 
 ## Retrieval Strategies
 
-| Strategy | Use When | Limitation |
-|----------|----------|------------|
-| **Semantic** (embedding similarity) | Direct factual queries | Degrades on multi-hop reasoning |
-| **Entity-based** (graph traversal) | "Tell me everything about X" | Requires graph structure |
-| **Temporal** (validity filter) | Facts change over time | Requires validity metadata |
-| **Hybrid** (semantic + keyword + graph) | Best accuracy | Most infrastructure |
+| Strategy | Use when | Main risk |
+|---|---|---|
+| exact/keyed | identifiers and known facts | misses paraphrases |
+| keyword/full-text | lexical match matters | vocabulary mismatch |
+| semantic | fuzzy topical retrieval | plausible but contextually wrong matches |
+| entity/graph | relationships and identity matter | schema/ingestion complexity |
+| temporal | facts evolve | incomplete validity metadata |
+| hybrid | no single signal is reliable enough | tuning/operational complexity |
 
-Zep's hybrid achieves 90% latency reduction by retrieving only relevant subgraphs. Cognee offers 14 search modes combining graph, vector, relational stores.
+Retrieve just in time and return the smallest evidence set that supports the task.
 
----
+## Provenance and Freshness
 
-## Temporal Knowledge Graphs
+A durable memory record should usually contain content, source/producing event, creation/update time, owner/scope, confidence for inferred facts, and validity/supersession metadata when facts can change.
 
-Track bi-temporal validity: when events occurred AND when they were ingested.
+Prefer explicit supersession or validity history over silently overwriting important facts.
 
-```python
-graph.create_temporal_relationship(
-    source_id=user_node, rel_type="LIVES_AT", target_id=address_node,
-    valid_from=datetime(2024, 1, 15), valid_until=datetime(2024, 9, 1)
-)
-# Query: Where did user live on March 1, 2024?
-results = graph.query_at_time({"type": "LIVES_AT"}, query_time=datetime(2024, 3, 1))
-```
+## Consolidation
 
-Use entity registries (`get_or_create_node`) to maintain identity across conversations ("John Doe" always maps to same node).
+Consolidate when duplicated or stale records reduce retrieval quality, not merely on a fixed schedule.
 
----
+Typical process:
 
-## Memory Consolidation
+1. group candidate duplicates/conflicts;
+2. preserve provenance and timestamps;
+3. merge equivalent facts or mark superseded ones;
+4. rebuild/update retrieval indexes;
+5. rerun representative retrieval probes.
 
-Run periodically to prevent unbounded growth. **Invalidate but don't discard** — preserving history matters for temporal queries.
+Do not discard history required for audit or temporal queries.
 
-**Triggers**: memory count threshold, degraded retrieval quality, scheduled intervals.
+## Framework Choice
 
-**Process**: find duplicate facts (same subject + predicate), merge by keeping highest-confidence edge, update validity periods, rebuild indexes.
+Frameworks such as Mem0, Zep/Graphiti, Letta, Cognee, LangMem, or a project-specific store are implementation options, not architecture requirements. Compare them using the workload's actual needs: tenancy, provenance, temporal queries, self-editing, graph traversal, deployment model, latency, and operational burden.
 
----
+Framework APIs and benchmark standings change quickly; verify current documentation before recommending one.
 
-## Context Integration
+## Failure Modes
 
-- Load memories just-in-time, not preloaded
-- Place in attention-favored positions (beginning or end of context)
-- Extract entities from task, retrieve per-entity memories, format for context injection
+- **Memory stuffing**: too many records enter context. Tighten retrieval and evidence limits.
+- **Stale poisoning**: old facts outrank current facts. Add validity and supersession rules.
+- **Identity collision**: records for different entities merge. Use stable IDs/entity resolution.
+- **Context mismatch**: related memory comes from the wrong project/user/session. Filter by scope.
+- **Write amplification**: every message becomes memory. Extract only durable information.
+- **Lost provenance**: summaries cannot be traced back to evidence. Preserve source pointers.
 
-### Error Recovery
-1. **Empty retrieval**: broaden search (remove entity filter, widen time range), then ask user
-2. **Stale results**: check `valid_until`, trigger consolidation
-3. **Conflicting facts**: prefer most recent `valid_from`, surface conflict if low confidence
-4. **Storage failure**: queue writes for retry; never block response on memory write
+## Verification
 
----
-
-## Gotchas
-
-1. **Stuffing everything into context** — use just-in-time retrieval with relevance filtering
-2. **Ignoring temporal validity** — outdated information poisons agent behavior silently
-3. **Over-engineering early** — filesystem agent can outperform complex tooling
-4. **No consolidation** — unbounded growth degrades retrieval quality
-5. **Embedding model mismatch** — writing with one model, reading with another → poor retrieval
-6. **Graph schema rigidity** — over-structured schemas break when domain evolves; prefer generic relations
-7. **Stale memory poisoning** — old contradicting memories corrupt behavior; implement confidence decay
-8. **Memory-context mismatch** — topically related but contextually wrong memories; filter by session/domain metadata
+Create probes from real tasks: known-answer recall, conflicting updates, stale facts, cross-project isolation, empty retrieval, and large-memory behavior. Evaluate end-to-end task quality rather than retrieval similarity alone.

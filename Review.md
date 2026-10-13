@@ -58,3 +58,40 @@
 - 审查全部 `references/`，合并跨文档重复规则和过时版本说明。
 - 优先拆分超大 reference，并建立更窄的按需路由，降低单次上下文加载成本。
 - 更新 Go 1.27、Rust 1.99、Swift 6.4、SwiftUI/iOS 27 与 Apple 最新设计实践的细节内容。
+
+---
+
+# 2026-10-13：References 按需加载重构
+
+## 目标
+- 继续审查全部 `references/`，把教程型、重复型文档收敛为 Agent 可快速路由的决策参考。
+- 清除与主 Skill 冲突的固定阈值、绝对化惯例和过时版本说明。
+- 更新 Swift 6.4、Go 1.27、Rust 1.99、SwiftUI/iOS 27 与 Apple 当前设计实践。
+
+## 设计决策
+- 单个 reference 优先聚焦一个问题域，保留：适用场景、决策原则、关键边界、常见失败、验证方法。
+- 删除可以由相邻 reference 覆盖的大段教程、重复示例和同义 checklist；跨主题内容改为引用路由。
+- 将 300 行作为本轮的软上限：完整 API 目录允许较高信息密度，但不再保留 500–1000 行的单文件教程。
+- 版本升级遵循项目实际 `go` directive、Rust MSRV/edition、Swift language/default isolation、Xcode SDK 与 deployment target，不把“最新版本”写成强制迁移要求。
+
+## 版本更新
+- **Swift 6.4**：补充 async `defer`、`withTaskCancellationShield`、Observation 细粒度通知，并把执行/isolation 判断从 Swift 6.2 固定描述升级为 project-settings-aware。
+- **Go 1.27**：补充 generic methods、`encoding/json/v2` / `encoding/json/jsontext`、`goroutineleak` pprof；修正 `WaitGroup.Go` 为 Go 1.25+。
+- **Rust 1.99**：新增 `modernization.md`，覆盖 Rust 2024/MSRV 工作流、C ABI variadics、raw-pointer layout API、`Box::leak` 所有权建议及相关稳定库 API。
+- **SwiftUI/iOS 27**：补充 Document API、任意容器 reordering、通用 swipe actions、toolbar adaptive APIs、`AsyncImage` HTTP caching、macro-based lazy `@State`、ContentBuilder 等。
+- **Apple Design**：Liquid Glass 统一按 functional layer / content layer 决策；优先系统组件，custom glass 仅用于明确的功能层需求。
+
+## 重点重构
+- Swift Concurrency：重写 `migration`、`tasks`、`actors`、`sendable`、`threading`、`async-sequences`、`async-algorithms`、`testing`、`memory-management`、`performance`、`core-data`，减少跨文件重复。
+- SwiftUI：重写/收敛 `latest-apis`、`state-management`、`view-structure`、`performance-patterns`、`list-patterns`、`sheet-navigation-patterns`、`charts`、`liquid-glass`、`macos-app-lifecycle`。
+- AI：移除 context 固定有效窗口/compaction 百分比、multi-agent 固定 token 倍数、tool 固定数量、hosted agent 固定 warm-pool cadence。
+- Go：区分 correctness/security invariant 与社区惯例，移除 Context、interface、gRPC 等主题中过度绝对化的 `MUST/NEVER` 规则。
+- Apple Design：`design-engineering` 从参数/框架教程收敛为交互状态、连续反馈、实现选择、性能与 accessibility 决策参考。
+- 二次一致性审查继续收敛 `database`、`memory-systems`、`motion-review`、`fluid-interfaces`、Go naming/safety/design patterns 与 Rust error handling，消除与主 Skill 冲突的绝对化规则。
+
+## 结果
+- 全部 references 总行数由约 19,347 行降至约 9,915 行，减少约 49%。
+- 当前最大的 reference 为 293 行；全部 reference 均控制在 300 行以内。
+- 清理固定 `60–70%` / `70–80%` context 阈值、`~15×` multi-agent 成本、`10–20 tools`、`30-minute` cadence、本机 `file:///Users/...` 链接等遗留约束。
+- 移除数据库“禁止 ORM”、固定 300ms 动画上限、固定 spring/velocity 参数、强制 motion review 输出格式，以及易过期的跨框架 memory benchmark 数字。
+- `git diff --check` 通过。

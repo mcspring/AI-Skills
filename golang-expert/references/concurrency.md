@@ -1,112 +1,111 @@
-# Concurrency & Context
+# Go Concurrency and Context
 
-Go's concurrency model is built on goroutines and channels. Every goroutine is a resource you must manage — structured concurrency means every goroutine has a clear owner, a predictable exit, and proper error propagation. `context.Context` is the coordination mechanism that ties cancellation, deadlines, and request-scoped values across the entire call chain.
+Use this reference for goroutine lifetime, cancellation, channels, synchronization, and request-scoped context.
 
-## Core Principles
+## Goroutine Ownership
 
-1. **Every goroutine must have a clear exit** — without a shutdown mechanism (context, done channel, WaitGroup), they leak and accumulate until the process crashes
-2. **Share memory by communicating** — channels transfer ownership explicitly; mutexes protect shared state but make ownership implicit
-3. **Send copies, not pointers** on channels — sending pointers creates invisible shared memory, defeating the purpose of channels
-4. **Only the sender closes a channel** — closing from the receiver side panics if the sender writes after close
-5. **Specify channel direction** (`chan<-`, `<-chan`) — the compiler prevents misuse at build time
-6. **Default to unbuffered channels** — larger buffers mask backpressure; use them only with measured justification
-7. **Always include `ctx.Done()` in select** — without it, goroutines leak after caller cancellation
-8. **Never use `time.After` in loops** — each call creates a timer that lives until it fires. Use `time.NewTimer` + `Reset`
-9. **Track goroutine leaks in tests** with `go.uber.org/goleak`
+Every goroutine needs a reason to exist and a way to stop.
 
-## Context Best Practices
+Define:
 
-1. `ctx` MUST be the first parameter, named `ctx context.Context`
-2. NEVER store context in a struct — pass explicitly through function parameters
-3. NEVER pass `nil` context — use `context.TODO()` if unsure
-4. `cancel()` MUST always be deferred immediately after `WithCancel`/`WithTimeout`/`WithDeadline`
-5. `context.Background()` MUST only be used at the top level (main, init, tests)
-6. NEVER create a new `context.Background()` in the middle of a request path
-7. Context value keys MUST be unexported types to prevent collisions
-8. Context values carry request-scoped metadata ONLY — NEVER function parameters
-9. Use `context.WithoutCancel` (Go 1.21+) for background work that must outlive the parent
+- who starts it;
+- what input it consumes;
+- how it terminates;
+- how errors are surfaced;
+- whether shutdown waits for it.
 
-### Creating Contexts
+A goroutine without an ownership/lifetime story is a common leak source.
 
-| Situation | Use |
-| --- | --- |
-| Entry point (main, init, test) | `context.Background()` |
-| Function needs context but caller doesn't provide one | `context.TODO()` |
-| Inside an HTTP handler | `r.Context()` |
-| Need cancellation control | `context.WithCancel(parentCtx)` |
-| Need a deadline/timeout | `context.WithTimeout(parentCtx, duration)` |
+## Context
 
-### Context Propagation
+Use `context.Context` for cancellation, deadlines, and request-scoped metadata that crosses API/process boundaries.
 
-```go
-// ✗ Bad — breaks the chain
-func (s *OrderService) Create(ctx context.Context, order Order) error {
-    return s.db.ExecContext(context.Background(), "INSERT INTO orders ...", order.ID)
-}
+Conventional Go APIs place `ctx context.Context` first when the operation is context-aware. Preserve existing public API conventions rather than rewriting solely for style.
 
-// ✓ Good — propagates the caller's context
-func (s *OrderService) Create(ctx context.Context, order Order) error {
-    return s.db.ExecContext(ctx, "INSERT INTO orders ...", order.ID)
-}
-```
+Guidance:
 
-## Channel vs Mutex vs Atomic
+- do not pass `nil`; use an appropriate real context;
+- propagate caller context through request-scoped work;
+- call the returned cancel function when creating cancellable/deadline contexts so associated resources are released;
+- use `context.WithoutCancel` deliberately for work that must outlive caller cancellation while retaining context values;
+- use context values sparingly for cross-cutting request metadata, not ordinary required parameters.
 
-| Scenario | Use | Why |
-| --- | --- | --- |
-| Passing data between goroutines | Channel | Communicates ownership transfer |
-| Coordinating goroutine lifecycle | Channel + context | Clean shutdown with select |
-| Protecting shared struct fields | `sync.Mutex` / `sync.RWMutex` | Simple critical sections |
-| Simple counters, flags | `sync/atomic` | Lock-free, lower overhead |
-| Many readers, few writers on a map | `sync.Map` | Optimized for read-heavy. **Concurrent map read/write causes hard crash** |
-| Caching expensive computations | `sync.Once` / `singleflight` | Execute once or deduplicate |
+Storing context in a long-lived struct is usually a design smell, but some framework/request wrapper types can legitimately carry it. Judge by lifetime semantics rather than a blanket ban.
 
-## WaitGroup vs errgroup
+## Cancellation in Loops
 
-| Need | Use | Why |
-| --- | --- | --- |
-| Wait for goroutines, errors not needed | `sync.WaitGroup` | Fire-and-forget |
-| Wait + collect first error | `errgroup.Group` | Error propagation |
-| Wait + cancel siblings on first error | `errgroup.WithContext` | Context cancellation on error |
-| Wait + limit concurrency | `errgroup.SetLimit(n)` | Built-in worker pool |
+Long-running workers should observe cancellation at meaningful boundaries. A `select` on `ctx.Done()` is useful when waiting on channels/timers; CPU loops can check `ctx.Err()` between batches.
 
-## Sync Primitives Quick Reference
+Do not add cancellation checks to trivial operations where no useful interruption is possible.
 
-| Primitive | Use case | Key notes |
-| --- | --- | --- |
-| `sync.Mutex` | Protect shared state | Keep critical sections short; never hold across I/O |
-| `sync.RWMutex` | Many readers, few writers | Never upgrade RLock to Lock (deadlock) |
-| `sync/atomic` | Simple counters, flags | Prefer typed atomics (Go 1.19+): `atomic.Int64`, `atomic.Bool` |
-| `sync.Map` | Concurrent map, read-heavy | No explicit locking; use `RWMutex`+map when writes dominate |
-| `sync.Pool` | Reuse temporary objects | Always `Reset()` before `Put()`; reduces GC pressure |
-| `sync.Once` | One-time initialization | Go 1.21+: `OnceFunc`, `OnceValue`, `OnceValues` |
-| `sync.WaitGroup` | Wait for goroutine completion | `Add` before `go`; Go 1.24+: `wg.Go()` simplifies usage |
-| `x/sync/singleflight` | Deduplicate concurrent calls | Cache stampede prevention |
-| `x/sync/errgroup` | Goroutine group + errors | `SetLimit(n)` replaces hand-rolled worker pools |
+## Channels vs Mutexes
 
-## Concurrency Checklist
+Use channels when transferring ownership/coordinating streams of events naturally expresses the problem.
 
-Before spawning a goroutine, answer:
+Use mutexes/atomics when several goroutines share short-lived mutable state and synchronous access is clearer.
 
-- [ ] **How will it exit?** — context cancellation, channel close, or explicit signal
-- [ ] **Can I signal it to stop?** — pass `context.Context` or done channel
-- [ ] **Can I wait for it?** — `sync.WaitGroup` or `errgroup`
-- [ ] **Who owns the channels?** — creator/sender owns and closes
-- [ ] **Should this be synchronous instead?** — don't add concurrency without measured need
+“Share memory by communicating” is guidance, not a prohibition on mutexes.
 
-## Common Mistakes
+## Channel Ownership
 
-| Mistake | Fix |
-| --- | --- |
-| Fire-and-forget goroutine | Provide stop mechanism (context, done channel) |
-| Closing channel from receiver | Only the sender closes |
-| `time.After` in hot loop | Reuse `time.NewTimer` + `Reset` |
-| Missing `ctx.Done()` in select | Always select on context |
-| Unbounded goroutine spawning | Use `errgroup.SetLimit(n)` or semaphore |
-| Sharing pointer via channel | Send copies or immutable values |
-| `wg.Add` inside goroutine | Call `Add` before `go` |
-| Forgetting `-race` in CI | Always run `go test -race ./...` |
-| Mutex held across I/O | Keep critical sections short |
-| Creating new `context.Background()` mid-request | Propagate parent context |
-| Storing context in struct | Pass as first function parameter |
-| Nil context passed | Use `context.TODO()` if unsure |
+The code responsible for producing a stream should normally decide when no more values will be sent and close the channel when receivers rely on closure.
+
+Receivers should not close a channel just to stop a producer; cancellation or a separate control signal is usually clearer.
+
+Never send on a closed channel. Nil channels intentionally block and can be useful in select state machines, but should be obvious from the code.
+
+## Bounded Concurrency
+
+Bound concurrency when input size, resource usage, or downstream limits can grow.
+
+Options include:
+
+- `errgroup.Group` with `SetLimit` for fallible groups;
+- semaphores when permits model a resource;
+- worker pools when jobs are a long-lived stream;
+- application-specific rate limiters for external services.
+
+Do not build a worker pool for a small fixed number of independent operations when `errgroup`/`WaitGroup` is clearer.
+
+## `sync.WaitGroup`
+
+For modules targeting Go 1.25+, `WaitGroup.Go` can combine starting/tracking goroutines and reduce `Add`/`Done` bookkeeping.
+
+Use classic `Add` + goroutine when compatibility or control requires it. Ensure `Add` happens before a concurrent `Wait` can observe zero for newly started work.
+
+## Locks
+
+Keep critical sections small and protect one clear invariant.
+
+- use `Mutex` by default for shared state;
+- use `RWMutex` only when measured/read-heavy access benefits;
+- avoid copying structs containing mutexes after first use;
+- do not call unknown/slow external code while holding a lock when it can cause contention or deadlock.
+
+## Atomics
+
+Use atomics for small, well-defined lock-free state where the memory/invariant model remains obvious. If several fields must change consistently, a mutex is often safer and clearer.
+
+## Timers
+
+Avoid repeatedly allocating timers in hot loops when a reusable timer/ticker expresses the lifecycle better. Stop/drain/reset according to the current timer API semantics and target Go version.
+
+## Leaks and Diagnostics
+
+Investigate suspected leaks with goroutine profiles, traces, and lifecycle tests.
+
+Go 1.27 adds the `goroutineleak` pprof profile for a class of permanently blocked unreachable goroutines. It is a useful signal, not a complete leak detector.
+
+## Common Failures
+
+- goroutine waits forever because no cancellation/close path exists;
+- unbounded goroutine-per-item fan-out;
+- channel send blocked after consumer exits;
+- request work starts from a fresh background context and ignores cancellation accidentally;
+- lock held while making network/disk/callback calls;
+- copying a mutex-containing value;
+- using channels for simple shared counters/maps where a lock is clearer.
+
+## Verification
+
+Run focused tests and `go test -race` for concurrency-sensitive changes. For leaks/contention/performance, use pprof/trace with representative workloads rather than relying only on code inspection.

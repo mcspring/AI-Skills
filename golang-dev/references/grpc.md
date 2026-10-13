@@ -1,125 +1,136 @@
-# gRPC Services
+# Go gRPC
 
-Treat gRPC as a pure transport layer — keep it separate from business logic. Use `google.golang.org/grpc`.
+Use this reference for service boundaries, status mapping, deadlines/cancellation, connection lifecycle, interceptors, health, and tests.
 
-## Quick Reference
+## Service Boundary
 
-| Concern | Package / Tool |
-| --- | --- |
-| Service definition | `protoc` or `buf` with `.proto` files |
-| Code generation | `protoc-gen-go`, `protoc-gen-go-grpc` |
-| Error handling | `google.golang.org/grpc/status` + `codes` |
-| Rich error details | `errdetails.BadRequest` via `status.WithDetails` |
-| Interceptors | `grpc.ChainUnaryInterceptor`, `grpc.ChainStreamInterceptor` |
-| Middleware | `github.com/grpc-ecosystem/go-grpc-middleware` |
-| Testing | `google.golang.org/grpc/test/bufconn` |
-| TLS / mTLS | `google.golang.org/grpc/credentials` |
-| Health checks | `google.golang.org/grpc/health` |
+Keep protobuf transport types at the transport boundary when the application has a separate domain model. Thin services typically:
 
-## Proto Organization
+1. validate/normalize transport input;
+2. call domain/application logic;
+3. translate domain failures to gRPC status;
+4. build the response.
 
-Organize by domain with versioned directories (`proto/user/v1/`). Always use `Request`/`Response` wrapper messages — bare types can't evolve.
+Do not spread `status.Error` construction through domain code unless the domain itself is intentionally gRPC-specific.
 
-## Server
+## Status Codes
 
-```go
-srv := grpc.NewServer(
-    grpc.ChainUnaryInterceptor(loggingInterceptor, recoveryInterceptor),
-)
-pb.RegisterUserServiceServer(srv, svc)
-healthpb.RegisterHealthServer(srv, health.NewServer())
+Return deliberate status codes for conditions callers can act on, for example invalid input, not found, permission denied, conflict/precondition, resource exhaustion, unavailable, or deadline exceeded.
 
-go srv.Serve(lis)
+Unknown internal errors should normally become `codes.Internal`/an appropriate safe status while detailed diagnostics stay in server logs/traces.
 
-// Graceful shutdown
-stopped := make(chan struct{})
-go func() { srv.GracefulStop(); close(stopped) }()
-select {
-case <-stopped:
-case <-time.After(15 * time.Second):
-    srv.Stop()
-}
-```
+Avoid exposing raw internal error strings to untrusted clients.
 
-### Interceptor Pattern
+## Context, Deadlines, Cancellation
 
-```go
-func loggingInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-    start := time.Now()
-    resp, err := handler(ctx, req)
-    slog.Info("rpc", "method", info.FullMethod, "duration", time.Since(start), "code", status.Code(err))
-    return resp, err
-}
-```
+Server handlers receive a context tied to the RPC. Propagate it into request-scoped DB/network work.
 
-## Client
+Clients should use deadlines when the product/request has a real latency budget. Reusable low-level libraries should not invent arbitrary deadlines when the caller is responsible for policy.
 
-- Reuse connections — HTTP/2 multiplexes RPCs on one connection
-- `context.WithTimeout` on every call — no deadline = hang forever
-- `round_robin` with `dns:///` for Kubernetes headless services
-- Pass auth tokens via `metadata.NewOutgoingContext`
+Respect cancellation and avoid continuing expensive work after the RPC no longer needs a result.
 
-```go
-conn, err := grpc.NewClient("dns:///user-service:50051",
-    grpc.WithTransportCredentials(creds),
-    grpc.WithDefaultServiceConfig(`{
-        "loadBalancingPolicy": "round_robin",
-        "methodConfig": [{"name": [{"service": ""}], "timeout": "5s"}]
-    }`),
-)
-client := pb.NewUserServiceClient(conn)
-```
+## Connections
 
-## Error Handling
+gRPC client connections/channels are designed for reuse and multiplexing. Do not dial a new connection per RPC.
 
-Always return `status.Errorf` with specific codes:
+Own connection lifecycle at a service/application boundary and close it during shutdown when appropriate.
 
-| Code | When |
-| --- | --- |
-| `InvalidArgument` | Malformed input |
-| `NotFound` | Entity doesn't exist |
-| `AlreadyExists` | Create conflict |
-| `PermissionDenied` | Lacks permission |
-| `Unauthenticated` | Missing/invalid token |
-| `ResourceExhausted` | Rate limit / quota |
-| `Unavailable` | Transient, safe to retry |
-| `Internal` | Unexpected bug |
-| `DeadlineExceeded` | Timeout |
+Connection pooling is usually unnecessary at the gRPC layer unless a specific load-balancing/network requirement calls for multiple channels.
 
-```go
-// ✗ Raw error → codes.Unknown
-return nil, fmt.Errorf("user not found")
+## Interceptors
 
-// ✓ Specific code
-return nil, status.Errorf(codes.NotFound, "user %q not found", req.UserId)
-```
+Use interceptors for cross-cutting transport concerns such as:
+
+- authentication/authorization plumbing;
+- tracing/metrics/log correlation;
+- panic recovery at the transport boundary;
+- consistent metadata handling;
+- policy-based retries where the client architecture owns them.
+
+Do not move business validation or domain authorization decisions into generic interceptors when they need request/domain context.
+
+## Retries
+
+Retry only operations that are safe under the service semantics. Prefer gRPC/service-config retry support where appropriate instead of handwritten loops around every call.
+
+Consider:
+
+- idempotency;
+- retryable status codes;
+- backoff/jitter;
+- caller deadline;
+- server/load impact.
+
+Never retry cancellation/deadline blindly.
+
+## Health and Readiness
+
+Implement the standard gRPC health service when orchestrators/load balancers/clients use it. Readiness should represent whether the service can handle useful work, not simply whether the process is alive.
+
+Keep health semantics aligned with deployment infrastructure; Kubernetes does not inherently require one specific gRPC implementation if another probe strategy is used.
+
+## Reflection
+
+Reflection is useful for development, debugging, and dynamic tooling. Production policy depends on threat model and operational needs.
+
+Do not disable it solely because “production must never expose reflection”; instead decide whether API discoverability is acceptable and protected by the same network/auth boundaries as the service.
+
+## TLS and Transport Security
+
+Protect RPC traffic according to the deployment trust boundary.
+
+TLS/mTLS is normally appropriate across untrusted networks and service-mesh/public boundaries. Plaintext can be acceptable inside a separately authenticated/encrypted local transport or tightly controlled test environment.
+
+Security requirements should come from the architecture/threat model, not a blanket `TLS MUST` statement detached from transport context.
+
+## Metadata
+
+Use metadata for transport/request context such as auth tokens, trace correlation, locale, or protocol-level hints.
+
+Do not put large business payloads or mutable application state in metadata.
 
 ## Streaming
 
-| Pattern | Use Case |
-| --- | --- |
-| Server streaming | Log tailing, result sets |
-| Client streaming | File upload, batch |
-| Bidirectional | Chat, real-time sync |
+For streaming RPCs:
 
-Prefer streaming over large single messages.
+- define who closes/sends terminal status;
+- handle client/server cancellation promptly;
+- consider backpressure and bounded application buffering;
+- avoid a goroutine per message without bounds;
+- surface partial-progress semantics explicitly when errors can occur after earlier messages.
 
-## Security
+## Graceful Shutdown
 
-- TLS MUST be enabled in production
-- mTLS or service mesh for service-to-service auth
-- `credentials.PerRPCCredentials` + auth interceptor for user auth
-- Disable reflection in production
+Stop accepting new work, allow in-flight RPCs a bounded opportunity to finish according to application shutdown policy, then force termination if necessary.
 
-## Common Mistakes
+Do not wait forever for a stuck stream. The timeout belongs to application/deployment shutdown policy.
 
-| Mistake | Fix |
-| --- | --- |
-| Raw `error` return | `status.Errorf` with specific code |
-| No deadline on client calls | Always `context.WithTimeout` |
-| New connection per request | Create once, reuse |
-| Reflection in production | Disable — prevents API discovery |
-| `codes.Internal` for all errors | Wrong codes break retry logic |
-| Bare types as RPC args | Wrapper messages for evolution |
-| Missing health check | Kubernetes can't determine readiness |
-| Ignoring context cancellation | Check `ctx.Err()` in long operations |
+## Testing
+
+Choose the narrowest layer that proves the behavior:
+
+- direct service method tests for domain/status mapping;
+- in-memory transport (`bufconn`) when serialization/interceptors/client behavior matter;
+- integration tests against real network/TLS only for behavior those layers can expose.
+
+Test status codes and structured details, not only error strings.
+
+## Observability
+
+Trace/measure RPC method, status, latency, and relevant server/client spans. Keep labels bounded; do not use arbitrary IDs as metric labels.
+
+Log request identifiers and safe diagnostic context without serializing secrets or large payloads by default.
+
+## Common Failures
+
+- raw domain/internal error returned as `Unknown` or leaked to clients;
+- dialing per request;
+- arbitrary timeout inside a low-level helper conflicting with caller budget;
+- retrying non-idempotent RPCs;
+- unbounded stream buffering;
+- health check that says healthy while critical dependencies make useful work impossible;
+- security/reflection rules copied without considering actual network boundary.
+
+## Verification
+
+Run unit/service tests, then transport/integration tests only where needed. Exercise cancellation, deadline, status mapping, streaming termination, retry/idempotency, and graceful shutdown for production-critical services.

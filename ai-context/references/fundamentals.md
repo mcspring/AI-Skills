@@ -1,118 +1,128 @@
-# Context Fundamentals
+# Context Engineering Fundamentals
 
-Core concepts: context anatomy, attention mechanics, progressive disclosure, and token budgeting.
+Use this reference to decide what belongs in active model context, what should be retrieved later, and how to structure context for reliable attention.
 
-## Anatomy of Context
+## Context Is an Attention Surface
 
-Five components compete for the attention budget:
+A model context window is not equivalent to reliable working memory. More tokens can help when they add relevant evidence, but irrelevant, stale, repetitive, or conflicting tokens can reduce answer quality.
 
-### System Prompts
-Organize into distinct sections (background → instructions → tool guidance → output format) using XML tags or markdown headers. Place critical constraints at beginning and end where recall is 85–95%.
+Do not assume a universal “effective capacity” percentage. Usable context depends on model, task, retrieval quality, position, repetition, and the type of reasoning required.
 
-**Instruction altitude**: aim for heuristic-driven — specific enough to guide behavior, flexible enough to generalize. Start minimal, add instructions reactively based on observed failure modes.
+## Context Layers
 
-```markdown
-<BACKGROUND_INFORMATION>
-Context about the domain, user preferences, or project-specific details
-</BACKGROUND_INFORMATION>
+Typical agent context contains:
 
-<INSTRUCTIONS>
-Core behavioral guidelines — numbered steps with room for judgment
-</INSTRUCTIONS>
+1. system/developer instructions;
+2. tool schemas and capability descriptions;
+3. task/user instructions;
+4. retrieved project/domain knowledge;
+5. conversation/decision history;
+6. tool observations and artifacts;
+7. temporary reasoning state needed for the current step.
 
-<TOOL_GUIDANCE>
-When and how to use available tools
-</TOOL_GUIDANCE>
-
-<OUTPUT_DESCRIPTION>
-Expected output format and quality standards
-</OUTPUT_DESCRIPTION>
-```
-
-### Tool Definitions
-Answer three questions: what the tool does, when to use it, what it returns. Include parameter defaults and error cases. Keep the tool set minimal — bloated sets create ambiguous decision points and inflate 2–3× after JSON serialization.
-
-**Strong description example:**
-```
-Retrieve customer info by ID or email.
-Use when: user asks about customer details, history, or status.
-Returns: { name, email, account_status, order_history_summary }
-Returns null if not found. Returns error if database unreachable.
-```
-
-### Retrieved Documents
-Maintain lightweight identifiers (file paths, stored queries) — load data just-in-time. Strong identifiers (`customer_pricing_rates.json`) let agents locate files without search; weak identifiers (`data/file1.json`) force unnecessary loads.
-
-When chunking, split at semantic boundaries (section headers, paragraph breaks), not arbitrary character limits.
-
-### Message History
-Serves as scratchpad memory for tracking progress across turns. Monitor growth — can dominate context in long sessions. Replace stale tool outputs with compact summaries once processed.
-
-### Tool Outputs
-Dominate context: observations can reach **83.9% of total tokens** in agent trajectories. Apply observation masking: replace verbose outputs with compact references. Retain only the 5 most recently accessed file contents.
-
----
-
-## Attention Mechanics
-
-### The U-Shaped Curve
-Beginning and end positions receive 85–95% recall accuracy. Middle positions suffer **10–40% reduced recall** (Liu et al., 2023 "Lost in the Middle"). This is a consequence of attention mechanics, not a model bug.
-
-### Effective Capacity
-Assume **60–70% of advertised window** as usable. A 200K-token model starts degrading at 120–140K tokens. Complex retrieval accuracy can drop to 15% at extreme lengths.
-
-### Position Encoding
-Interpolation extends sequence handling beyond training lengths but introduces degradation in positional precision at extended contexts.
-
----
+These layers have different lifetimes. Stable rules should not be repeatedly regenerated; large observations should not remain active after they stop being useful.
 
 ## Progressive Disclosure
 
-Load context in layers, not all at once:
+Load the smallest representation that lets the agent choose the next step:
 
-1. **Skill selection** — names + one-line descriptions at startup; full skill content on demand
-2. **Document loading** — summaries first; detail sections only when task requires
-3. **Tool result retention** — recent results in full; compress/evict older results
+- index/name/description first;
+- short summary next;
+- exact source section when needed;
+- full artifact only when the task truly requires it.
 
-**Rule**: if activated, load fully. Partial loads create confusing gaps that degrade reasoning.
+This reduces distraction and makes retrieval decisions explicit.
 
----
+## High-Signal Context
 
-## Token Budgeting
+Prioritize information that changes the next action:
 
-### Budget Allocation
+- explicit user goal and acceptance criteria;
+- current state and constraints;
+- exact errors/diagnostics;
+- relevant files/symbols/IDs;
+- decisions already made and why;
+- evidence needed to verify the result.
 
-| Component | Typical Range | Notes |
-|-----------|---------------|-------|
-| System prompt | 500–2000 tokens | Stable across session |
-| Tool definitions | 100–500 per tool | Grows with tool count |
-| Retrieved documents | Variable | Often largest consumer |
-| Message history | Variable | Grows with conversation |
-| Tool outputs | Variable | Can dominate context |
-| **Reserved buffer** | **5–10% of total** | **Never allocate** |
+Historical detail that does not affect the current task should be summarized or offloaded.
 
-### Token Estimation
+## Stable Prefixes and Prompt Caching
 
-| Content Type | Chars/Token |
-|-------------|-------------|
-| English prose | ~4 |
-| Code | 2–3 |
-| URLs/file paths | ~1 (each slash/dot = separate token) |
-| Non-English text | 1–2 |
+When the platform supports prompt caching, keep long-lived instruction/tool prefixes stable. Put changing task data later rather than rewriting stable schemas/instructions each turn.
 
-Use the provider's actual tokenizer (tiktoken, Anthropic API) for budget-critical calculations. The ~4 chars/token heuristic breaks for code, URLs, and non-English.
+Caching is an optimization, not a reason to preserve irrelevant context.
 
-### Context Quality vs Quantity
+## Attention Placement
 
-Apply the **signal-density test**: for each piece of context, ask whether removing it would change the model's output. If not, remove it. Redundant content actively dilutes attention from high-signal content.
+Important constraints should be easy to find and semantically distinct. Do not rely on one fixed “best position” rule across every model.
 
----
+Useful practices:
 
-## Gotchas
+- keep critical global rules in the instruction layer;
+- repeat a task-critical constraint near the action only when necessary to prevent ambiguity;
+- structure long retrieved content with headings/metadata so relevant sections are identifiable;
+- avoid burying current state inside old transcripts.
 
-1. **Nominal window ≠ effective capacity** — budget for 60–70%; exceeding causes sudden drops, not gradual degradation
-2. **Tool schemas inflate 2–3×** — 10 tools with moderate schemas → 5,000–8,000 tokens before any message
-3. **History balloons in agentic loops** — 20–30 iterations → 70–80% of window consumed silently
-4. **Critical instructions in the middle get lost** — never place safety/format/behavior rules in mid-prompt
-5. **Eager progressive disclosure defeats its purpose** — strict activation thresholds, not "maybe relevant"
-6. **Mixed instruction altitudes** — don't interleave hyper-specific rules with vague directives
+## Context vs Memory
+
+Context is what the model can attend to now. Memory is durable information that can be retrieved into context later.
+
+Store information externally when:
+
+- it must survive compaction/session boundaries;
+- it is large but only occasionally needed;
+- it has clear retrieval keys/provenance;
+- keeping it active would crowd out current evidence.
+
+Do not use external memory for ephemeral facts that are cheaper and safer to recompute.
+
+## Context Budgeting
+
+Budget from the task backward rather than a universal percentage.
+
+Reserve room for:
+
+- expected tool observations;
+- retrieved evidence;
+- the model's output;
+- retries or unexpected diagnostics.
+
+Track actual token/tool growth in representative runs. Trigger selection/compaction based on observed degradation or approaching model limits, not a hard-coded fraction copied between models.
+
+## Instruction Altitude
+
+Good instructions specify invariants and decision criteria without scripting every trivial step.
+
+Too vague:
+- “write good code.”
+
+Too narrow:
+- dozens of brittle rules that only fit one implementation/version.
+
+Prefer:
+- goal;
+- constraints;
+- correctness/safety boundaries;
+- tool/reference routing;
+- verification expectations.
+
+## Conflicts and Freshness
+
+When context sources disagree:
+
+1. identify authority and recency;
+2. prefer direct/current sources over summaries;
+3. preserve the conflict if it matters rather than blending incompatible claims;
+4. update or invalidate stale memory/reference state.
+
+## Evaluation
+
+Evaluate context architecture with real tasks:
+
+- correctness/goal completion;
+- retrieval precision and missed evidence;
+- unnecessary context loaded;
+- total tokens/tool calls/latency;
+- failure recovery after long trajectories.
+
+A smaller context is better only when it preserves or improves task performance.

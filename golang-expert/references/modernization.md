@@ -1,122 +1,108 @@
-# Modernization
+# Go Modernization
 
-Keep Go codebases current with the latest language features and standard library improvements. Scope: Go 1.21 through Go 1.26 (2023–2026).
+Use this reference when updating an existing module to newer language or standard-library capabilities. Start from the `go` directive in `go.mod`; do not assume the newest compiler is an acceptable minimum version.
 
 ## Workflow
 
-1. Check `go.mod` / `go.work` for current Go version
-2. Check latest release at https://go.dev/dl/
-3. Scan for modernization opportunities based on target version
-4. Run `golangci-lint` with `modernize` linter (v2.6.0+)
-5. Prioritize by impact: safety → readability → gradual improvement
+1. Record the current `go` directive and supported deployment/tooling constraints.
+2. Run tests and static analysis before changing behavior.
+3. Prefer automated `go fix`/modernize rewrites when they preserve semantics.
+4. Upgrade one compatibility boundary at a time.
+5. Re-run tests, vet, race/security checks as relevant.
 
-## Go Version Changelogs
+Modernization is optional unless an older API is unsafe, deprecated, unsupported, or materially complicates the code.
 
-| Version | Release | Changelog |
-| --- | --- | --- |
-| Go 1.21 | Aug 2023 | https://go.dev/doc/go1.21 |
-| Go 1.22 | Feb 2024 | https://go.dev/doc/go1.22 |
-| Go 1.23 | Aug 2024 | https://go.dev/doc/go1.23 |
-| Go 1.24 | Feb 2025 | https://go.dev/doc/go1.24 |
-| Go 1.25 | Aug 2025 | https://go.dev/doc/go1.25 |
-| Go 1.26 | Feb 2026 | https://go.dev/doc/go1.26 |
+## Version Landmarks
 
-## Deprecated Packages
+| Go | Notable capabilities useful during modernization |
+|---|---|
+| 1.21 | `slices`, `maps`, `cmp`, `min`/`max`, PGO, `sync.OnceFunc/OnceValue` |
+| 1.22 | per-iteration loop variables, range-over-int, `math/rand/v2` |
+| 1.23 | range-over-function iterators and iterator ecosystem improvements |
+| 1.24 | `os.Root`, `runtime.AddCleanup`, `b.Loop`, tool directives, newer stdlib crypto packages |
+| 1.25 | `sync.WaitGroup.Go`, continued synctest/testing improvements |
+| 1.26 | `go fix` modernizers and additional stdlib/security migrations |
+| 1.27 | generic methods, `encoding/json/v2`, `encoding/json/jsontext`, `goroutineleak` profile |
 
-| Deprecated | Replacement | Since |
-| --- | --- | --- |
-| `math/rand` | `math/rand/v2` | Go 1.22 |
-| `crypto/elliptic` (most) | `crypto/ecdh` | Go 1.21 |
-| `reflect.SliceHeader` | `unsafe.Slice`, `unsafe.String` | Go 1.21 |
-| `runtime.SetFinalizer` | `runtime.AddCleanup` | Go 1.24 |
-| `golang.org/x/crypto/sha3` | `crypto/sha3` | Go 1.24 |
-| `golang.org/x/crypto/hkdf` | `crypto/hkdf` | Go 1.24 |
-| `golang.org/x/crypto/pbkdf2` | `crypto/pbkdf2` | Go 1.24 |
-| `testing/synctest.Run` | `testing/synctest.Test` | Go 1.25 |
-| `crypto.EncryptPKCS1v15` | OAEP encryption | Go 1.26 |
-| `ReverseProxy.Director` | `ReverseProxy.Rewrite` | Go 1.26 |
+Check official release notes for exact API availability before editing code.
 
-## Migration Priority
+## Go 1.27
 
-### High Priority (safety & correctness)
+### Generic methods
 
-1. Remove loop variable shadow copies — Go 1.22+
-2. Replace `math/rand` with `math/rand/v2` — Go 1.22+
-3. Use `os.Root` for user-supplied paths — Go 1.24+
-4. Run `govulncheck` — Go 1.22+
-5. Use `errors.Is`/`errors.As` instead of direct comparison
-6. Migrate deprecated crypto packages — Go 1.24+
+Methods may declare their own type parameters in Go 1.27. Consider them when the generic operation naturally belongs to a type's API and improves discoverability.
 
-### Medium Priority (readability)
+Do not convert package-level generic functions mechanically. Interface methods still cannot declare type parameters, and compatibility/API stability may favor the existing form.
 
-7. Replace `interface{}` with `any` — Go 1.18+
-8. Use `min`/`max` builtins — Go 1.21+
-9. Use `range` over int — Go 1.22+
-10. Use `slices` and `maps` packages — Go 1.21+
-11. Use `cmp.Or` for default values — Go 1.22+
-12. Use `sync.OnceValue`/`sync.OnceFunc` — Go 1.21+
-13. Use `sync.WaitGroup.Go` — Go 1.25+
-14. Use `t.Context()` in tests — Go 1.24+
-15. Use `b.Loop()` in benchmarks — Go 1.24+
+### `encoding/json/v2`
 
-### Lower Priority (gradual)
+Go 1.27 ships `encoding/json/v2` and `encoding/json/jsontext`.
 
-16. Migrate to `slog` — Go 1.21+
-17. Adopt iterators — Go 1.23+
-18. Replace `sort.Slice` with `slices.SortFunc` — Go 1.21+
-19. Use `strings.SplitSeq` — Go 1.24+
-20. Tool deps to `go.mod` tool directives — Go 1.24+
-21. Enable PGO — Go 1.21+
-22. Upgrade to golangci-lint v2 with `modernize` — v2.6.0+
-23. Add `govulncheck` to CI
-24. Evaluate `encoding/json/v2` — Go 1.25+
+Use v2 deliberately when stricter semantics, streaming/text-level APIs, options, or performance benefits matter. Important differences include stricter handling of malformed UTF-8 and duplicate object names.
 
-## Key Modernizations by Version
+The existing `encoding/json` API remains supported. Do not force migration merely because v2 exists; serialization behavior is a compatibility boundary and should have tests before changing implementation.
 
-### Go 1.21+
-- `min()`, `max()` builtins
-- `slices`, `maps`, `cmp` packages
-- `log/slog` structured logging
-- `sync.OnceFunc`, `sync.OnceValue`, `sync.OnceValues`
-- `context.WithoutCancel`
+### Goroutine leak profile
 
-### Go 1.22+
-- Loop variable per-iteration scoping (no more shadow copies)
-- `range` over integers: `for i := range 10`
-- `math/rand/v2`
-- `cmp.Or` for default values
+`runtime/pprof` and `net/http/pprof` expose the `goroutineleak` profile for a useful class of permanently blocked goroutines.
 
-### Go 1.23+
-- Range-over-func iterators (`iter.Seq`, `iter.Seq2`)
-- `slices.All`, `slices.Values`, `maps.Keys`, `maps.Values`
-- `structs.HostLayout` for cgo
+Use it as a diagnostic aid, not as proof that no leak exists: reachability-based detection cannot identify every possible goroutine leak.
 
-### Go 1.24+
-- `os.Root` for path-safe file access
-- `t.Context()` — test context auto-cancelled on cleanup
-- `b.Loop()` — benchmark loop with compiler optimization prevention
-- `runtime.AddCleanup` replaces `SetFinalizer`
-- `strings.SplitSeq`, `strings.FieldsSeq`
-- `go.mod` tool directives
+## High-Value Modernizations
 
-### Go 1.25+
-- `sync.WaitGroup.Go` — spawn and track goroutines
-- `testing/synctest.Test` replaces `synctest.Run`
-- `encoding/json/v2` (experimental)
+### Safety/security
 
-### Go 1.26+
-- Rewritten `go fix` with modernize analyzers
-- `ReverseProxy.Rewrite` replaces `Director`
+- use `os.Root` for filesystem operations scoped to an untrusted/user-selected root where supported;
+- migrate obsolete crypto APIs when the replacement improves security guarantees;
+- run `govulncheck` when dependency/security changes are in scope;
+- replace unsafe slice/string-header manipulation with supported unsafe helpers only when unsafe code is actually required.
+
+### Readability
+
+- use `slices`, `maps`, and `cmp` when they make intent clearer than local helpers;
+- remove loop-variable compatibility copies when the module targets Go 1.22+;
+- use range-over-int or iterators when they improve the code, not simply because they are newer;
+- prefer `WaitGroup.Go` when it matches task lifetime and the module target supports it.
+
+### Testing/performance
+
+- use `b.Loop()` on supported versions for benchmarks;
+- use `t.Context()` where it cleanly connects test lifetime to request-scoped APIs;
+- evaluate PGO only with representative profiles;
+- use current pprof/trace diagnostics before rewriting performance-sensitive code.
+
+## Dependency Modernization
+
+Prefer removing dependencies when the standard library now provides the same capability clearly and migration cost is low. Keep a dependency when it still provides important semantics, ecosystem integration, or compatibility.
+
+Do not replace established libraries with stdlib equivalents without checking behavior, operational tooling, and API surface.
+
+## API Compatibility
+
+For public packages:
+
+- preserve exported names and behavior unless a breaking release is intended;
+- avoid raising the minimum Go version for a minor cleanup unless project policy allows it;
+- treat JSON/text formats and error matching as compatibility surfaces;
+- document minimum-version changes explicitly.
 
 ## Tooling
 
-```bash
-# Modernize linter (golangci-lint v2)
-golangci-lint run --enable modernize
+Useful checks include:
 
-# Vulnerability check
+```sh
+gofmt -w .
+go test ./...
+go vet ./...
 govulncheck ./...
-
-# Go fix with modernize (Go 1.26+)
-go fix -fix modernize ./...
 ```
+
+Use race tests and benchmarks when the touched code justifies them. `golangci-lint` modernize rules can surface candidates, but review each suggestion against the module's minimum Go version and behavior.
+
+## Avoid
+
+- “upgrade to latest Go” as an unconditional code-review requirement;
+- replacing every helper with a newly added stdlib API when readability is unchanged;
+- changing JSON implementation without compatibility tests;
+- introducing generic methods merely to demonstrate a Go 1.27 feature;
+- trusting automated rewrites without running the affected tests.

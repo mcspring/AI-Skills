@@ -1,543 +1,112 @@
-# Sendable
+# Sendable and Isolation Transfer
 
-Use this when:
+Use this reference when values cross actor/task boundaries or the compiler reports potential data races.
 
-- A value or reference type must cross an isolation boundary safely.
-- You are resolving "non-Sendable type" compiler diagnostics.
-- You need to decide between value types, `@unchecked Sendable`, actors, or region-based isolation.
+## Core Idea
 
-Skip this file if:
+`Sendable` expresses that a value can safely cross concurrency isolation domains. It is not a marker for “thread-safe enough” and should not be added solely to silence diagnostics.
 
-- The issue is about which actor should own the state. Use `actors.md`.
-- The issue is about how async functions execute. Use `threading.md`.
+Before adding conformance, ask whether the value needs to cross the boundary at all.
 
-## What is Sendable?
+## Prefer These in Order
 
-`Sendable` indicates a type is safe to share across isolation domains (actors, tasks, threads). The compiler verifies thread-safety at compile time.
+1. Keep the value inside one isolation domain.
+2. Transfer an immutable value representation.
+3. Make the type structurally `Sendable` when its members support that safely.
+4. Put mutable shared state behind an actor/lock and transfer only safe handles or snapshots.
+5. Use `@unchecked Sendable` only when an external invariant proves safety.
 
-```swift
-public protocol Sendable {}
-```
+## Value Types
 
-Empty protocol, but triggers compiler verification of thread-safety.
+Structs and enums are natural Sendable candidates when all stored payloads are Sendable and mutation is not shared across isolation domains.
 
-## Isolation Domains
+Public/frozen/generic types may need explicit constraints because the compiler cannot infer safety across all clients.
 
-Three types of isolation in Swift Concurrency:
+Copy-on-write does not automatically make every wrapper safe: the implementation still has to preserve value semantics under concurrent use.
 
-### 1. Nonisolated (default)
+## Reference Types
 
-No concurrency restrictions, but can't modify isolated state:
+A class is safe to send only when its mutation model is safe across domains.
 
-```swift
-func computeValue(a: Int, b: Int) -> Int {
-    return a + b
-}
-```
+Common safe designs:
 
-### 2. Actor-isolated
+- immutable final class whose stored values are Sendable;
+- globally/actor-isolated class where mutation remains behind that isolation;
+- internally synchronized class with a documented invariant.
 
-Dedicated isolation domain with serialized access:
+Do not declare an ordinary mutable class `Sendable` because accesses “usually happen on one queue.”
 
-```swift
-actor Library {
-    var books: [String] = []
-    
-    func addBook(_ title: String) {
-        books.append(title)
-    }
-}
+## `@Sendable` Closures
 
-// External access requires await
-await library.addBook("Swift Concurrency")
-```
+A `@Sendable` closure must capture values safely for transfer.
 
-### 3. Global actor-isolated
+If a mutable local capture causes a diagnostic, prefer:
 
-Shared isolation domain across types:
+- immutable snapshots;
+- moving state behind an actor/lock;
+- redesigning the closure boundary.
 
-```swift
-@MainActor
-func updateUI() {
-    // Runs on main thread
-}
-```
+Avoid papering over mutable captures with unsafe annotations.
 
-## Data Races vs Race Conditions
+## Region-Based Isolation and `sending`
 
-### Data Race
+Modern Swift can prove some transfers safe without requiring a globally Sendable type when ownership moves between isolated regions.
 
-Multiple threads access shared mutable state, at least one writes, without synchronization:
+Treat `sending` and region-based isolation as ownership-transfer tools: after transfer, the original isolation domain must not continue using the transferred value in ways that violate the compiler's model.
 
-```swift
-// ⚠️ Data race
-var counter = 0
-DispatchQueue.global().async { counter += 1 }
-DispatchQueue.global().async { counter += 1 }
-```
+Prefer these language-supported transfers over broad `@unchecked Sendable` when they model the actual lifetime.
 
-**Detection**: Enable Thread Sanitizer in scheme settings.
+## `@unchecked Sendable`
 
-**Prevention**: Use actors or Sendable types:
+Use only when all of these are true:
 
-```swift
-actor Counter {
-    private var value = 0
-    
-    func increment() {
-        value += 1
-    }
-}
-```
+- the type genuinely crosses isolation domains;
+- the implementation already guarantees safe access through immutability or synchronization;
+- the compiler cannot express/prove that guarantee;
+- the invariant is documented next to the conformance;
+- focused tests exercise concurrent access where practical.
 
-### Race Condition
+If the safety story depends on callers remembering an undocumented rule, the type is not a good `@unchecked Sendable` candidate.
 
-Timing-dependent behavior leading to unpredictable results:
+## Global State
 
-```swift
-let counter = Counter()
+Global mutable state should have an explicit owner:
 
-for _ in 1...10 {
-    Task { await counter.increment() }
-}
+- global actor;
+- actor instance;
+- lock-protected storage;
+- immutable Sendable value.
 
-// May print inconsistent values
-print(await counter.getValue())
-```
+`nonisolated(unsafe)` suppresses checking and should be a last-resort compatibility bridge, not a design pattern.
 
-**Key difference**: Swift Concurrency prevents data races but not race conditions. You must still ensure proper sequencing.
+## Locks and Sendability
 
-## Value Types (Structs, Enums)
+A lock-protected class can be Sendable if every access to mutable state consistently uses the same synchronization invariant. Never expose references that let callers bypass the lock.
 
-### Implicit conformance
+Do not hold synchronous locks across suspension points.
 
-Non-public structs/enums with Sendable members:
+## Common Diagnostics
 
-```swift
-// Implicitly Sendable
-struct Person {
-    var name: String
-}
-```
+### “Sending ... risks causing data races”
 
-### Explicit conformance required
+Find the boundary being crossed. Prefer moving a safe snapshot or keeping the original object isolated.
 
-Public types need explicit declaration:
+### Captured mutable variable in concurrently executing code
 
-```swift
-public struct Person: Sendable {
-    var name: String
-}
-```
+Replace shared mutable capture with immutable input, actor-owned state, or another explicit synchronization boundary.
 
-**Why**: Compiler can't verify internal details of public types across modules.
+### Protocol/conformance isolation mismatch
 
-### Frozen types
+Do not solve this by weakening isolation first. Determine whether the conformance itself should be isolated; see `actors.md`.
 
-Public frozen types can be implicitly Sendable:
+## Avoid
 
-```swift
-@frozen
-public struct Point: Sendable {
-    public var x: Double
-    public var y: Double
-}
-```
+- mass-adding `Sendable` during migration;
+- `@unchecked Sendable` around framework objects with unknown mutation semantics;
+- assuming value type means automatically race-safe;
+- using locks inconsistently across methods;
+- treating compiler diagnostics as false positives before identifying the transfer boundary.
 
-### All members must be Sendable
+## Verification
 
-```swift
-public struct Person: Sendable {
-    var name: String
-    var hometown: Location // Must also be Sendable
-}
-
-public struct Location: Sendable {
-    var name: String
-}
-```
-
-### Copy-on-write makes mutability safe
-
-```swift
-public struct Person: Sendable {
-    var name: String // Mutable but safe due to COW
-}
-```
-
-Each mutation creates a copy, preventing concurrent access to same instance.
-
-## Reference Types (Classes)
-
-### Requirements for Sendable classes
-
-Must be:
-1. `final` (no inheritance)
-2. Immutable stored properties only
-3. All properties Sendable
-4. No superclass or `NSObject` only
-
-```swift
-final class User: Sendable {
-    let name: String
-    let id: Int
-    
-    init(name: String, id: Int) {
-        self.name = name
-        self.id = id
-    }
-}
-```
-
-### Why non-final classes can't be Sendable
-
-Child classes could introduce unsafe mutability:
-
-```swift
-// Can't be Sendable
-class Purchaser {
-    func purchase() { }
-}
-
-// Could introduce data races
-class GamePurchaser: Purchaser {
-    var credits: Int = 0 // Mutable!
-}
-```
-
-### Actor isolation makes classes Sendable
-
-```swift
-@MainActor
-class ViewModel {
-    var data: [Item] = [] // Safe due to actor isolation
-}
-// Implicitly Sendable
-```
-
-### Composition over inheritance
-
-```swift
-final class Purchaser: Sendable {
-    func purchase() { }
-}
-
-final class GamePurchaser {
-    let purchaser: Purchaser = Purchaser()
-    // Handle credits separately
-}
-```
-
-## Functions and Closures (@Sendable)
-
-Mark functions/closures that cross isolation domains:
-
-```swift
-actor ContactsStore {
-    func removeAll(_ shouldRemove: @Sendable (Contact) -> Bool) async {
-        contacts.removeAll { shouldRemove($0) }
-    }
-}
-```
-
-### Captured values must be Sendable
-
-```swift
-let query = "search"
-
-// ✅ Immutable capture
-store.filter { contact in
-    contact.name.contains(query)
-}
-
-var query = "search"
-
-// ❌ Mutable capture
-store.filter { contact in
-    contact.name.contains(query) // Error
-}
-```
-
-### Capture lists for mutable values
-
-```swift
-var query = "search"
-
-// ✅ Capture immutable snapshot
-store.filter { [query] contact in
-    contact.name.contains(query)
-}
-```
-
-## @unchecked Sendable
-
-**Use as last resort.** Tells compiler to skip verification—you guarantee thread-safety.
-
-### When to use
-
-Manual locking mechanisms the compiler can't verify:
-
-```swift
-final class Cache: @unchecked Sendable {
-    private let lock = NSLock()
-    private var items: [String: Data] = [:]
-    
-    func get(_ key: String) -> Data? {
-        lock.lock()
-        defer { lock.unlock() }
-        return items[key]
-    }
-    
-    func set(_ key: String, value: Data) {
-        lock.lock()
-        defer { lock.unlock() }
-        items[key] = value
-    }
-}
-```
-
-### Risks
-
-- No compile-time safety
-- Easy to introduce data races
-- Must manually ensure all access uses lock
-
-```swift
-final class Cache: @unchecked Sendable {
-    private let lock = NSLock()
-    private var items: [String: Data] = [:]
-    
-    // ⚠️ Forgot lock - data race!
-    var count: Int {
-        items.count
-    }
-}
-```
-
-**Better**: Use actor instead:
-
-```swift
-actor Cache {
-    private var items: [String: Data] = [:]
-    
-    var count: Int { items.count }
-    
-    func get(_ key: String) -> Data? {
-        items[key]
-    }
-    
-    func set(_ key: String, value: Data) {
-        items[key] = value
-    }
-}
-```
-
-## Region-Based Isolation
-
-Compiler allows non-Sendable types in same scope:
-
-```swift
-class Article {
-    var title: String
-    init(title: String) { self.title = title }
-}
-
-func check() {
-    let article = Article(title: "Swift")
-    
-    Task {
-        print(article.title) // ✅ OK - same region
-    }
-}
-```
-
-**Why**: No mutation after transfer, so no data race risk.
-
-### Breaks when accessed after transfer
-
-```swift
-func check() {
-    let article = Article(title: "Swift")
-    
-    Task {
-        print(article.title)
-    }
-    
-    print(article.title) // ❌ Error - accessed after transfer
-}
-```
-
-## The sending Keyword
-
-Enforces ownership transfer for non-Sendable types:
-
-### Parameter values
-
-```swift
-actor Logger {
-    func log(article: Article) {
-        print(article.title)
-    }
-}
-
-func printTitle(article: sending Article) async {
-    let logger = Logger()
-    await logger.log(article: article)
-}
-
-// Usage
-let article = Article(title: "Swift")
-await printTitle(article: article)
-// article no longer accessible here
-```
-
-### Return values
-
-```swift
-@SomeActor
-func createArticle(title: String) -> sending Article {
-    return Article(title: title)
-}
-```
-
-Transfers ownership to caller's region.
-
-## Global Variables
-
-Must be concurrency-safe since accessible from any context.
-
-### Problem
-
-```swift
-class ImageCache {
-    static var shared = ImageCache() // ⚠️ Not concurrency-safe
-}
-```
-
-### Solution 1: Actor isolation
-
-```swift
-@MainActor
-class ImageCache {
-    static var shared = ImageCache()
-}
-```
-
-### Solution 2: Immutable + Sendable
-
-```swift
-final class ImageCache: Sendable {
-    static let shared = ImageCache()
-}
-```
-
-### Solution 3: nonisolated(unsafe)
-
-**Last resort** - you guarantee safety:
-
-```swift
-struct APIProvider: Sendable {
-    nonisolated(unsafe) static private(set) var shared: APIProvider!
-    
-    static func configure(apiURL: URL) {
-        shared = APIProvider(apiURL: apiURL)
-    }
-}
-```
-
-Use `private(set)` to limit mutation points.
-
-## Custom Locks + Sendable
-
-### Legacy code with locks
-
-```swift
-final class BankAccount: @unchecked Sendable {
-    private var balance: Int = 0
-    private let lock = NSLock()
-    
-    func deposit(amount: Int) {
-        lock.lock()
-        balance += amount
-        lock.unlock()
-    }
-    
-    func getBalance() -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return balance
-    }
-}
-```
-
-### Migration strategy
-
-**New code**: Use actors
-
-**Existing code**: 
-1. If isolated and small scope → migrate to actor
-2. If widely used → use `@unchecked Sendable`, file migration ticket
-
-```swift
-// Better: Migrate to actor
-actor BankAccount {
-    private var balance: Int = 0
-    
-    func deposit(amount: Int) {
-        balance += amount
-    }
-    
-    func getBalance() -> Int {
-        balance
-    }
-}
-```
-
-## Decision Tree
-
-```
-Need to share type across isolation domains?
-├─ Value type (struct/enum)?
-│  ├─ Public? → Add explicit Sendable
-│  └─ Internal? → Implicit Sendable (if members Sendable)
-│
-├─ Reference type (class)?
-│  ├─ Can be final + immutable? → Sendable
-│  ├─ Needs mutation?
-│  │  ├─ Can use actor? → Use actor (automatic Sendable)
-│  │  ├─ Main thread only? → @MainActor
-│  │  └─ Has custom lock? → @unchecked Sendable (temporary)
-│  └─ Can be struct instead? → Refactor to struct
-│
-└─ Function/closure? → @Sendable attribute
-```
-
-## Common Patterns
-
-### Restructure to avoid non-Sendable dependencies
-
-```swift
-// Instead of storing non-Sendable type
-public struct Person: Sendable {
-    var hometown: String // Just the name
-    
-    init(hometown: Location) {
-        self.hometown = hometown.name
-    }
-}
-```
-
-- **Prefer actors for mutable state** — see [actors.md § Mutex vs Actor](actors.md#mutex-alternative-to-actors) for the comparison.
-- **Use @MainActor for UI-bound types** — see [actors.md § @MainActor Best Practices](actors.md#mainactor-best-practices).
-
-## Best Practices
-
-1. **Prefer value types** - structs/enums are easier to make Sendable
-2. **Use actors for mutable state** - automatic thread-safety
-3. **Avoid @unchecked Sendable** - use only for proven thread-safe code
-4. **Mark public types explicitly** - don't rely on implicit conformance
-5. **Ensure all members Sendable** - one non-Sendable breaks the chain
-6. **Use @MainActor for UI types** - simple isolation for view models
-7. **Capture immutably** - use capture lists for mutable variables
-8. **Test with Thread Sanitizer** - catches runtime data races
-9. **File migration tickets** - track @unchecked Sendable usage
+Compile in the project's real concurrency mode, test concurrent callers where the invariant matters, and use Thread Sanitizer/runtime diagnostics when legacy synchronization remains involved.

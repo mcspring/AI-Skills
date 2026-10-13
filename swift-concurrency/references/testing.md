@@ -1,567 +1,125 @@
-# Testing Concurrent Code
-
-Use this when:
-
-- You are writing async tests.
-- A test is flaky because of task scheduling or actor isolation.
-- You need to replace XCTest waiting APIs or verify deallocation.
-
-Skip this file if:
-
-- You mainly need production ownership guidance. Use `actors.md`, `tasks.md`, or `memory-management.md`.
-
-## Recommendation: Use Swift Testing
-
-**Swift Testing is strongly recommended** for new projects and tests. It provides:
-- Modern Swift syntax with macros
-- Better concurrency support
-- Cleaner test structure
-- More flexible test organization
-
-XCTest patterns are included for legacy codebases.
-
-## Swift Testing Basics
-
-### Simple async test
-
-```swift
-@Test
-@MainActor
-func emptyQuery() async {
-    let searcher = ArticleSearcher()
-    await searcher.search("")
-    #expect(searcher.results == ArticleSearcher.allArticles)
-}
-```
-
-**Key differences from XCTest**:
-- `@Test` macro instead of `XCTestCase`
-- `#expect` instead of `XCTAssert`
-- Structs preferred over classes
-- No `test` prefix required
-
-### Testing with actors
-
-```swift
-@Test
-@MainActor
-func searchReturnsResults() async {
-    let searcher = ArticleSearcher()
-    await searcher.search("swift")
-    #expect(!searcher.results.isEmpty)
-}
-```
-
-Mark test with actor if system under test requires it.
-
-## Awaiting Async Callbacks
-
-### Using continuations
-
-When testing unstructured tasks:
-
-```swift
-@Test
-@MainActor
-func searchTaskCompletes() async {
-    let searcher = ArticleSearcher()
-    
-    await withCheckedContinuation { continuation in
-        _ = withObservationTracking {
-            searcher.results
-        } onChange: {
-            continuation.resume()
-        }
-        
-        searcher.startSearchTask("swift")
-    }
-    
-    #expect(searcher.results.count > 0)
-}
-```
-
-**Use when**: Testing code that spawns unstructured tasks.
-
-### Using confirmations
-
-For structured async code:
-
-```swift
-@Test
-@MainActor
-func searchTriggersObservation() async {
-    let searcher = ArticleSearcher()
-    
-    await confirmation { confirm in
-        _ = withObservationTracking {
-            searcher.results
-        } onChange: {
-            confirm()
-        }
-        
-        // Must await here for confirmation to work
-        await searcher.search("swift")
-    }
-    
-    #expect(!searcher.results.isEmpty)
-}
-```
-
-**Critical**: Must `await` async work for confirmation to validate.
-
-## Setup and Teardown
-
-### Using init/deinit
-
-```swift
-@MainActor
-final class DatabaseTests {
-    let database: Database
-    
-    init() async throws {
-        database = Database()
-        await database.prepare()
-    }
-    
-    deinit {
-        // Synchronous cleanup only
-    }
-    
-    @Test
-    func insertsData() async throws {
-        try await database.insert(item)
-        #expect(await database.count() == 1)
-    }
-}
-```
-
-**Limitation**: `deinit` cannot call async methods.
-
-### Test Scoping Traits
-
-For async teardown:
-
-```swift
-@MainActor
-struct DatabaseTrait: SuiteTrait, TestTrait, TestScoping {
-    func provideScope(
-        for test: Test,
-        testCase: Test.Case?,
-        performing function: () async throws -> Void
-    ) async throws {
-        let database = Database()
-        
-        try await Environment.$database.withValue(database) {
-            await database.prepare()
-            try await function()
-            await database.cleanup() // Async teardown
-        }
-    }
-}
-
-// Environment for task-local storage
-@MainActor
-struct Environment {
-    @TaskLocal static var database = Database()
-}
-
-// Apply to suite
-@Suite(DatabaseTrait())
-@MainActor
-final class DatabaseTests {
-    @Test
-    func insertsData() async throws {
-        try await Environment.database.insert(item)
-    }
-}
-
-// Or apply to individual test
-@Test(DatabaseTrait())
-func specificTest() async throws {
-    // Test code
-}
-```
-
-**Use when**: Need async cleanup after each test.
-
-## Handling Flaky Tests
-
-### Problem: Race conditions
-
-```swift
-@Test
-@MainActor
-func isLoadingState() async throws {
-    let fetcher = ImageFetcher()
-    
-    let task = Task { try await fetcher.fetch(url) }
-    
-    // ❌ Flaky - may pass or fail
-    #expect(fetcher.isLoading == true)
-    
-    try await task.value
-    #expect(fetcher.isLoading == false)
-}
-```
-
-**Issue**: Task may complete before we check `isLoading`.
-
-### Solution: Swift Concurrency Extras
-
-```swift
-import ConcurrencyExtras
-
-@Test
-@MainActor
-func isLoadingState() async throws {
-    try await withMainSerialExecutor {
-        let fetcher = ImageFetcher { url in
-            await Task.yield() // Allow test to check state
-            return Data()
-        }
-        
-        let task = Task { try await fetcher.fetch(url) }
-        
-        await Task.yield() // Switch to task
-        
-        #expect(fetcher.isLoading == true) // ✅ Reliable
-        
-        try await task.value
-        #expect(fetcher.isLoading == false)
-    }
-}
-```
-
-**Add package**: `https://github.com/pointfreeco/swift-concurrency-extras.git`
-
-### Serial execution required
-
-```swift
-@Suite(.serialized)
-@MainActor
-final class ImageFetcherTests {
-    // Tests run serially when using withMainSerialExecutor
-}
-```
-
-**Critical**: Main serial executor doesn't work with parallel test execution.
-
-## XCTest Patterns (Legacy)
-
-### Basic async test
-
-```swift
-final class ArticleSearcherTests: XCTestCase {
-    @MainActor
-    func testEmptyQuery() async {
-        let searcher = ArticleSearcher()
-        await searcher.search("")
-        XCTAssertEqual(searcher.results, ArticleSearcher.allArticles)
-    }
-}
-```
-
-### Using expectations
-
-```swift
-@MainActor
-func testSearchTask() async {
-    let searcher = ArticleSearcher()
-    let expectation = expectation(description: "Search complete")
-    
-    _ = withObservationTracking {
-        searcher.results
-    } onChange: {
-        expectation.fulfill()
-    }
-    
-    searcher.startSearchTask("swift")
-    
-    // Use fulfillment, not wait
-    await fulfillment(of: [expectation], timeout: 10)
-    
-    XCTAssertEqual(searcher.results.count, 1)
-}
-```
-
-**Critical**: Use `await fulfillment(of:)`, not `wait(for:)` to avoid deadlocks.
-
-### Setup and teardown
-
-```swift
-final class DatabaseTests: XCTestCase {
-    override func setUp() async throws {
-        // Async setup
-    }
-    
-    override func tearDown() async throws {
-        // Async teardown
-    }
-}
-```
-
-Mark as `async throws` to call async methods.
-
-### Main serial executor for all tests
-
-```swift
-final class MyTests: XCTestCase {
-    override func invokeTest() {
-        withMainSerialExecutor {
-            super.invokeTest()
-        }
-    }
-}
-```
-
-## Common Patterns
-
-### Testing @MainActor code
-
-```swift
-@Test
-@MainActor
-func viewModelUpdates() async {
-    let viewModel = ViewModel()
-    await viewModel.loadData()
-    #expect(viewModel.items.count > 0)
-}
-```
-
-### Testing actors
-
-```swift
-@Test
-func actorIsolation() async {
-    let store = DataStore()
-    await store.insert(item)
-    let count = await store.count()
-    #expect(count == 1)
-}
-```
-
-### Testing cancellation
-
-```swift
-@Test
-func cancellationStopsWork() async throws {
-    let processor = DataProcessor()
-    
-    let task = Task {
-        try await processor.processLargeDataset()
-    }
-    
-    task.cancel()
-    
-    do {
-        try await task.value
-        Issue.record("Should have thrown cancellation error")
-    } catch is CancellationError {
-        // Expected
-    }
-}
-```
-
-### Testing with delays
-
-```swift
-@Test
-func debouncedSearch() async throws {
-    try await withMainSerialExecutor {
-        let searcher = DebouncedSearcher()
-        
-        searcher.search("a")
-        await Task.yield()
-        
-        searcher.search("ab")
-        await Task.yield()
-        
-        searcher.search("abc")
-        
-        // Wait for debounce
-        try await Task.sleep(for: .milliseconds(600))
-        
-        #expect(searcher.searchCount == 1) // Only last search executed
-    }
-}
-```
-
-### Testing task groups
-
-```swift
-@Test
-func taskGroupProcessesAll() async throws {
-    let processor = BatchProcessor()
-    
-    let results = await withTaskGroup(of: Int.self) { group in
-        for i in 1...5 {
-            group.addTask { await processor.process(i) }
-        }
-        
-        var collected: [Int] = []
-        for await result in group {
-            collected.append(result)
-        }
-        return collected
-    }
-    
-    #expect(results.count == 5)
-}
-```
-
-## Testing Memory Management
-
-### Verify deallocation
-
-```swift
-@Test
-func viewModelDeallocates() async {
-    var viewModel: ViewModel? = ViewModel()
-    weak var weakViewModel = viewModel
-    
-    viewModel?.startWork()
-    viewModel = nil
-    
-    try? await Task.sleep(for: .milliseconds(100))
-    
-    #expect(weakViewModel == nil)
-}
-```
-
-### Detect retain cycles
-
-```swift
-@Test
-func noRetainCycle() async {
-    var manager: Manager? = Manager()
-    weak var weakManager = manager
-    
-    manager?.startLongRunningTask()
-    manager = nil
-    
-    #expect(weakManager == nil)
-}
-```
-
-## Best Practices
-
-1. **Use Swift Testing for new code** - modern, better concurrency support
-2. **Mark tests with correct isolation** - @MainActor when needed
-3. **Use confirmations over continuations** - when structured concurrency allows
-4. **Serialize tests with main serial executor** - avoid flaky tests
-5. **Test cancellation explicitly** - ensure proper cleanup
-6. **Verify deallocation** - catch retain cycles early
-7. **Use Task.yield() strategically** - control execution in tests
-8. **Avoid sleep in tests** - use continuations/confirmations instead
-9. **Test actor isolation** - verify thread safety
-10. **Keep tests deterministic** - avoid timing dependencies
-
-## Migration from XCTest
-
-### XCTest → Swift Testing
-
-```swift
-// XCTest
-final class MyTests: XCTestCase {
-    func testExample() async {
-        XCTAssertEqual(value, expected)
-    }
-}
-
-// Swift Testing
-@Suite
-struct MyTests {
-    @Test
-    func example() async {
-        #expect(value == expected)
-    }
-}
-```
-
-### Expectations → Confirmations
-
-```swift
-// XCTest
-let expectation = expectation(description: "Done")
-doWork { expectation.fulfill() }
-await fulfillment(of: [expectation])
-
-// Swift Testing
-await confirmation { confirm in
-    await doWork { confirm() }
-}
-```
-
-### Setup/Teardown → Traits
-
-```swift
-// XCTest
-override func setUp() async throws {
-    await prepare()
-}
-
-// Swift Testing
-struct SetupTrait: TestTrait, TestScoping {
-    func provideScope(
-        for test: Test,
-        testCase: Test.Case?,
-        performing function: () async throws -> Void
-    ) async throws {
-        await prepare()
-        try await function()
-    }
-}
-```
-
-## Troubleshooting
-
-### Test hangs
-
-**Cause**: Waiting for expectation that never fulfills.
-
-**Solution**: Add timeout, verify observation tracking.
-
-### Flaky test
-
-**Cause**: Race condition in unstructured task.
-
-**Solution**: Use main serial executor + Task.yield().
-
-### Deadlock
-
-**Cause**: Using `wait(for:)` in async context.
-
-**Solution**: Use `await fulfillment(of:)` instead.
-
-### Confirmation fails
-
-**Cause**: Not awaiting async work in confirmation block.
-
-**Solution**: Add `await` before async calls.
-
-### Actor isolation error
-
-**Cause**: Test not marked with required actor.
-
-**Solution**: Add `@MainActor` or appropriate actor to test.
-
-## Common Mistakes Agents Make
-
-- **Flaky intermediate-state assertions**: Asserting `isLoading == true` immediately after creating a `Task` is a race condition — the task may not have started yet. Use `withMainSerialExecutor` + `Task.yield()` to control scheduling before asserting intermediate state.
-- **Using `Task.sleep` as a synchronization primitive** in tests instead of deterministic scheduling.
-- **Asserting intermediate state without controlling scheduling**: Always use `withMainSerialExecutor` when you need to observe state between task creation and completion. Note: `withMainSerialExecutor` does not work with parallel test execution — mark the suite `@Suite(.serialized)`.
-- **Reaching into isolated internals** instead of testing public behavior.
-- **Keeping both Swift Testing and XCTest versions** of the same example unless they teach different migration paths.
-
-## Testing Checklist
-
-- [ ] Tests marked with correct isolation
-- [ ] Using Swift Testing (recommended)
-- [ ] Async methods properly awaited
-- [ ] Cancellation tested
-- [ ] Memory leaks checked
-- [ ] Race conditions handled
-- [ ] Timeouts appropriate
-- [ ] Flaky tests fixed with serial executor
-- [ ] Actor isolation verified
-- [ ] Cleanup in traits (not deinit)
+# Testing Swift Concurrency
+
+Use this reference for deterministic tests of async functions, actors, cancellation, streams, and lifetime behavior.
+
+## Prefer Behavior Over Scheduling
+
+Tests should assert observable results and invariants, not which thread ran a task or how many scheduler turns occurred.
+
+Avoid wall-clock sleeps as synchronization. They make tests slow and flaky and do not prove the intended state transition happened.
+
+## Swift Testing vs XCTest
+
+Use the test framework already adopted by the project.
+
+Swift Testing is a strong default for new Swift packages/apps on supported toolchains; XCTest remains appropriate for existing suites, UI tests, and APIs that still integrate around XCTest.
+
+Do not migrate a stable suite solely to modernize syntax.
+
+## Async Tests
+
+Async test functions can `await` production APIs directly. Keep setup/teardown lifetime explicit and avoid spawning untracked child tasks that can escape the test.
+
+When a test creates long-lived work, cancel and await its termination before the test ends.
+
+## Callbacks and Confirmations
+
+For callback-based behavior, use the framework's expectation/confirmation mechanisms rather than sleeping until a callback “probably” fired.
+
+Assert:
+
+- exact/allowed number of callbacks;
+- payload/order when behavior requires it;
+- no callback after cancellation or teardown when that is part of the contract.
+
+Checked continuations are useful for bridging a one-shot callback in test helpers, but ensure exactly one resume.
+
+## Actors
+
+Test actor state through the actor's public isolated API. Avoid adding `nonisolated` test-only escape hatches just to inspect internals.
+
+For reentrancy-sensitive code, create controlled suspension points/dependencies so the test can deliberately interleave operations.
+
+Do not rely on task sleeps to manufacture an actor race.
+
+## Cancellation
+
+A useful cancellation test controls when work starts, then cancels, then observes cleanup/result.
+
+Verify the contract rather than only checking `Task.isCancelled`:
+
+- underlying request/producer cancelled if promised;
+- no stale state committed after cancellation;
+- required cleanup still completed;
+- cancellation error propagated or intentionally translated.
+
+Swift 6.4 cancellation shields and async cleanup should be tested at their semantic boundary: shield only the essential cleanup, then verify normal work still respects cancellation.
+
+## AsyncSequence
+
+Test streams with controlled producers.
+
+Cover:
+
+- first and repeated values;
+- normal finish;
+- producer error;
+- consumer cancellation;
+- buffering/slow-consumer behavior when relevant.
+
+Avoid infinite production in tests. Bound the stream and terminate explicitly.
+
+## Main Actor
+
+Annotate a test `@MainActor` only when the tested API is genuinely main-actor isolated. Do not apply it globally to make isolation diagnostics disappear.
+
+If production code performs expensive off-main work and returns to main actor, assert the resulting state rather than thread identity.
+
+## Deterministic Time
+
+For debounce, throttle, timeout, and retry behavior, prefer injectable clocks/test clocks supported by the implementation/library.
+
+Wall-clock sleeps should be a last resort for integration behavior that cannot expose a controllable time source.
+
+## Lifetime and Leaks
+
+When task lifetime is part of correctness:
+
+- hold the owner weakly;
+- release strong references;
+- cancel/finish external streams;
+- wait using deterministic completion signals;
+- assert deallocation.
+
+A task retaining its owner is not automatically a leak if that lifetime is intentional; the test should express the intended ownership contract.
+
+## Concurrency Stress
+
+Use repeated/concurrent execution when testing synchronization invariants, but do not confuse a stress test with a proof of race freedom.
+
+Compiler isolation, Thread Sanitizer/runtime tooling, and invariant-focused tests complement each other.
+
+## Serial Execution
+
+Only force serial test execution when shared external state truly requires it. Prefer isolating test fixtures/state so tests can run independently.
+
+A global serial executor can change scheduling enough to hide bugs; use deterministic dependencies rather than relying on it as a general fix for flaky concurrency tests.
+
+## Common Failures
+
+- `Task.sleep` used as synchronization;
+- asserting exact thread IDs;
+- tests leaving unstructured tasks alive;
+- blanket `@MainActor` on the suite;
+- expectations that can fulfill after test teardown;
+- forgetting cancellation/error paths;
+- testing implementation scheduling instead of public behavior.
+
+## Verification Checklist
+
+1. Does the test deterministically know when the operation reached the state it needs?
+2. Does it cover success, failure, and cancellation where applicable?
+3. Are spawned tasks/streams cleaned up?
+4. Does it avoid scheduler timing assumptions?
+5. Does actor isolation match production behavior?
+6. For lifetime-sensitive code, is deallocation/termination actually asserted?

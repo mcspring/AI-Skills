@@ -1,649 +1,153 @@
-# SwiftUI Charts Reference
+# Swift Charts
 
-## Table of Contents
-
-- [Overview](#overview)
-- [Availability](#availability)
-- [Core APIs](#core-apis)
-- [Chart Types](#chart-types)
-- [Axis Tweaks](#axis-tweaks)
-- [Selection APIs](#selection-apis)
-- [Annotations](#annotations)
-- [ChartProxy and Custom Touch Handling](#chartproxy-and-custom-touch-handling)
-- [Modifier Scope](#modifier-scope)
-- [Styling and Visual Channels](#styling-and-visual-channels)
-- [Composing Multiple Marks](#composing-multiple-marks)
-- [Animating Chart Data](#animating-chart-data)
-- [Best Practices](#best-practices)
-
-## Overview
-
-Swift Charts is Apple's native charting framework for SwiftUI. Use `Chart` with one or more marks to build bar, line, area, point, rule, rectangle, and sector charts. This reference covers the standard 2D chart APIs, axis customization, built-in selection APIs, annotations, and custom touch handling.
+Use this reference for chart selection, composition, interaction, accessibility, and version-specific APIs.
 
 ## Availability
 
-Base `Chart`, custom axes, scales, and most marks require iOS 16 or later.
+Check deployment targets before using newer chart APIs.
 
-- `BarMark`, `LineMark`, `AreaMark`, `PointMark`, `RectangleMark`, and `RuleMark` are available on iOS 16+
-- `SectorMark`, built-in selection, and scrollable chart axes require iOS 17+
-- Data-driven plot types such as `BarPlot` and `LinePlot` require iOS 18+
-- Chart3D and Z-axis APIs exist on iOS 26+; this reference is primarily about 2D `Chart`, with a dedicated Chart3D section below
+- Swift Charts: iOS 16+ and corresponding platform releases.
+- selection/scrolling additions: newer SDK generations; confirm exact availability in the project's SDK.
+- `Chart3D`, `SurfacePlot`, Z-axis/camera APIs: iOS 26+ generation.
 
-```swift
-if #available(iOS 17, *) {
-    // Selection, SectorMark, scrollable axes
-} else {
-    // Base Chart, axes, scales, and core marks
-}
-```
+Do not gate an entire chart when only one optional feature requires a newer OS.
 
-## Core APIs
+## Start With the Question
 
-### Import the Framework
-
-Always check that the file imports `Charts` before using `Chart`, `Chart3D`, `BarMark`, `SectorMark`, or `ChartProxy`.
+Choose marks based on the relationship users need to understand:
 
-```swift
-import SwiftUI
-import Charts
-```
-
-If chart types are unresolved, the first thing to verify is that `Charts` is imported in that file.
-
-### Chart Container
-
-`Chart` is the root view. Add one or more marks inside it.
+| Need | Typical mark |
+|---|---|
+| compare categories | `BarMark` |
+| trend over ordered domain/time | `LineMark` |
+| trend with magnitude emphasis | `AreaMark` |
+| individual observations | `PointMark` |
+| intervals/ranges/heatmap cells | `RectangleMark` |
+| thresholds/reference values | `RuleMark` |
+| part-to-whole radial data | `SectorMark` |
+| continuous 3D surface | `SurfacePlot` / Chart3D APIs |
 
-```swift
-Chart(sales) { item in
-    BarMark(
-        x: .value("Month", item.month),
-        y: .value("Revenue", item.revenue)
-    )
-}
-```
-
-### Data Models Should Be Identifiable
-
-Prefer `Identifiable` models for chart data so identity stays stable as data changes.
-
-```swift
-struct SalesPoint: Identifiable {
-    let id: UUID
-    let month: String
-    let revenue: Double
-}
-```
+Avoid choosing a chart by novelty. Start from the analytical task and data scale.
 
-If your model cannot conform to `Identifiable`, provide an explicit id key path:
-
-```swift
-Chart(sales, id: \.month) { item in
-    BarMark(
-        x: .value("Month", item.month),
-        y: .value("Revenue", item.revenue)
-    )
-}
-```
-
-### Plottable Values
-
-Use `.value(_, _)` to describe what each axis value means. Those labels are reused by axes, legends, and accessibility.
-
-```swift
-LineMark(
-    x: .value("Day", entry.date),
-    y: .value("Steps", entry.count)
-)
-```
-
-## Chart Types
-
-### BarMark
-
-```swift
-BarMark(
-    x: .value("Product", product.name),
-    y: .value("Units", product.units)
-)
-```
-
-Stacking via `MarkStackingMethod`: `.standard`, `.normalized`, `.center`, `.unstacked`.
-
-### LineMark
-
-```swift
-LineMark(
-    x: .value("Day", day.date),
-    y: .value("Steps", day.count)
-)
-.interpolationMethod(.monotone)
-```
-
-Interpolation methods: `.linear`, `.monotone`, `.cardinal`, `.catmullRom`, `.stepStart`, `.stepCenter`, `.stepEnd`. Cardinal and Catmull-Rom accept optional tension/alpha parameters.
-
-### AreaMark
-
-```swift
-AreaMark(
-    x: .value("Hour", sample.hour),
-    y: .value("Temperature", sample.value),
-    stacking: .unstacked
-)
-```
-
-Ranged areas use `yStart`/`yEnd` for bands like min/max or confidence intervals:
-
-```swift
-AreaMark(
-    x: .value("Day", sample.day),
-    yStart: .value("Low", sample.low),
-    yEnd: .value("High", sample.high)
-)
-```
-
-### PointMark
-
-```swift
-PointMark(
-    x: .value("Time", measurement.time),
-    y: .value("Value", measurement.value)
-)
-```
-
-### RectangleMark
-
-```swift
-RectangleMark(
-    xStart: .value("Start Day", cell.startDay),
-    xEnd: .value("End Day", cell.endDay),
-    yStart: .value("Low", cell.low),
-    yEnd: .value("High", cell.high)
-)
-```
-
-### RuleMark
-
-```swift
-RuleMark(y: .value("Goal", 10_000))
-    .foregroundStyle(.red)
-```
-
-### SectorMark
-
-Use `SectorMark` for pie and donut-style charts. `SectorMark` requires iOS 17 or later.
-
-```swift
-Chart(expenses) { expense in
-    SectorMark(
-        angle: .value("Amount", expense.amount),
-        innerRadius: .ratio(0.6),
-        angularInset: 2
-    )
-    .foregroundStyle(by: .value("Category", expense.category))
-}
-```
-
-Use `innerRadius` to turn a pie chart into a donut chart, and `angularInset` to separate slices visually.
-
-### Plot Types (iOS 18+)
-
-iOS 18 adds data-driven plot wrappers: `AreaPlot`, `BarPlot`, `LinePlot`, `PointPlot`, `RectanglePlot`, `RulePlot`, and `SectorPlot`.
-
-`LinePlot` and `AreaPlot` also accept function closures for plotting mathematical functions without discrete data:
-
-```swift
-if #available(iOS 18, *) {
-    Chart {
-        LinePlot(x: "x", y: "sin(x)") { x in
-            sin(x)
-        }
-    }
-    .chartXScale(domain: -Double.pi ... Double.pi)
-    .chartYScale(domain: -1.5 ... 1.5)
-}
-```
-
-Use plot types when you want a data-first API surface or need function plotting. The underlying chart families stay the same.
-
-### Chart3D (iOS 26+)
-
-`Chart3D` is a separate API for 3D chart content. It supports 3D `PointMark`, `RectangleMark`, `RuleMark`, and `SurfacePlot`.
-
-```swift
-if #available(iOS 26, *) {
-    Chart3D(points) { point in
-        PointMark(
-            x: .value("X", point.x),
-            y: .value("Y", point.y),
-            z: .value("Z", point.z)
-        )
-    }
-    .chart3DPose(.front)
-    .chart3DCameraProjection(.perspective)
-}
-```
-
-`SurfacePlot` visualizes mathematical surfaces by evaluating a two-variable function:
-
-```swift
-if #available(iOS 26, *) {
-    Chart3D {
-        SurfacePlot(x: "x", y: "height", z: "z") { x, z in
-            sin(x) * cos(z)
-        }
-    }
-    .chartXScale(domain: -Double.pi ... Double.pi)
-    .chartZScale(domain: -Double.pi ... Double.pi)
-}
-```
-
-Camera and pose configuration:
-
-- **Projection**: `.chart3DCameraProjection(.orthographic)` (default, precise measurements) or `.perspective` (depth effect)
-- **Pose presets**: `.chart3DPose(.default)`, `.front`, `.back`, `.left`, `.right`
-- **Custom pose**: `.chart3DPose(azimuth: .degrees(45), inclination: .degrees(30))`
-- On visionOS, Chart3D supports natural 3D interaction gestures for rotation and exploration
-
-**Always** gate `Chart3D` with `#available(iOS 26, *)` — it is not available on earlier OS versions.
-
-## Axis Tweaks
-
-### Axis Visibility and Labels
-
-Use `chartXAxis`, `chartYAxis`, `chartXAxisLabel`, and `chartYAxisLabel` on the `Chart` container.
-Axis visibility supports `.automatic`, `.visible`, and `.hidden`.
-
-```swift
-Chart(data) { item in
-    BarMark(
-        x: .value("Month", item.month),
-        y: .value("Revenue", item.revenue)
-    )
-}
-.chartXAxis(.visible)
-.chartYAxis(.hidden)
-.chartXAxisLabel("Month")
-.chartYAxisLabel("Revenue")
-```
-
-### Custom Axis Marks
-
-Use `AxisMarks` to control tick placement, labels, and grid lines.
-
-```swift
-Chart(steps) { day in
-    LineMark(
-        x: .value("Day", day.date),
-        y: .value("Steps", day.count)
-    )
-}
-.chartXAxis {
-    AxisMarks(
-        preset: .aligned,
-        position: .bottom,
-        values: .stride(by: .day)
-    ) {
-        AxisGridLine()
-        AxisTick(length: .label)
-        AxisValueLabel(format: .dateTime.weekday(.abbreviated))
-    }
-}
-```
-
-Useful `AxisMarks` inputs:
-
-- `preset`: `.automatic`, `.extended`, `.aligned`, `.inset`
-- `position`: `.automatic`, `.leading`, `.trailing`, `.top`, `.bottom`
-- `values`: `.automatic`, `.automatic(desiredCount:)`, `.stride(by:)`, `.stride(by:count:)`, or an explicit array
-
-### Axis Components
-
-Within `AxisMarks`, combine the built-in axis components as needed:
-
-```swift
-AxisGridLine()
-AxisTick()
-AxisValueLabel()
-```
-
-`AxisValueLabel` can be tuned for dense axes:
-
-```swift
-AxisValueLabel(
-    collisionResolution: .greedy(minimumSpacing: 8),
-    orientation: .vertical
-)
-```
-
-Label orientations: `.automatic`, `.horizontal`, `.vertical`, `.verticalReversed`.
-
-Collision strategies: `.automatic`, `.greedy`, `.greedy(priority:minimumSpacing:)`, `.truncate`, `.disabled`.
-
-### Axis Domains and Plot Area Tweaks
-
-Use scales when you need explicit axis domains or plot area control.
-
-```swift
-Chart(data) { item in
-    LineMark(
-        x: .value("Index", item.index),
-        y: .value("Score", item.score)
-    )
-}
-.chartXScale(domain: 0...30)
-.chartYScale(domain: 0...100)
-.chartPlotStyle { plotArea in
-    plotArea
-        .background(.gray.opacity(0.08))
-}
-```
-
-You can set one axis domain without forcing the other:
-
-```swift
-.chartXScale(domain: startDate...endDate)
-```
-
-### Scrollable Axes (iOS 17+)
-
-For larger datasets, make the plot area scroll and control the visible domain.
-
-```swift
-@State private var scrollX = 7
-
-Chart(data) { item in
-    BarMark(
-        x: .value("Day", item.day),
-        y: .value("Value", item.value)
-    )
-}
-.chartScrollableAxes(.horizontal)
-.chartXVisibleDomain(length: 7)
-.chartScrollPosition(x: $scrollX)
-```
-
-## Selection APIs
-
-### Single-Value Selection
-
-Use `chartXSelection(value:)` or `chartYSelection(value:)` for one selected value.
-
-```swift
-@State private var selectedDate: Date?
-
-Chart(steps) { day in
-    LineMark(x: .value("Day", day.date), y: .value("Steps", day.count))
-
-    if let selectedDate {
-        RuleMark(x: .value("Selected Day", selectedDate))
-            .foregroundStyle(.secondary)
-    }
-}
-.chartXSelection(value: $selectedDate)
-```
-
-### Range Selection
-
-Use `chartXSelection(range:)` or `chartYSelection(range:)` for a dragged range. Bind to a `ClosedRange` whose bound type matches the plotted axis value.
-
-```swift
-@State private var selectedWeeks: ClosedRange<Int>?
-
-Chart(weeks) { week in
-    BarMark(x: .value("Week", week.index), y: .value("Revenue", week.revenue))
-}
-.chartXSelection(range: $selectedWeeks)
-```
-
-### Choosing Single vs Range
-
-- Use `value:` bindings when only one point or axis value should be selected.
-- Use `range:` bindings when users should brush a span (for zoom windows, comparisons, or grouped summaries).
-
-### Angle Selection
-
-Use `chartAngleSelection(value:)` with `SectorMark` charts. No built-in range overload for angle selection.
-
-```swift
-@State private var selectedAmount: Double?
-
-Chart(expenses) { expense in
-    SectorMark(angle: .value("Amount", expense.amount))
-        .foregroundStyle(by: .value("Category", expense.category))
-}
-.chartAngleSelection(value: $selectedAmount)
-```
-
-**Important**: Selection bindings return the plottable axis value, not the full data element. Map back to your model if you need the selected record.
+## Data and Identity
+
+Keep the data model stable and explicit.
+
+- use semantic IDs when rows can reorder/update;
+- normalize units/domains before rendering;
+- keep data transformation outside the chart builder when it is expensive or reused;
+- avoid silently mixing incompatible units on one axis.
+
+## Composition
+
+A `Chart` can contain multiple marks. Compose marks when they share a meaningful domain, for example bars plus a target rule or points over a trend line.
+
+Keep visual encodings consistent: one semantic category should not change color/symbol meaning between marks without a reason.
+
+## Plottable Values
+
+Use `.value(label, value)` with labels that describe the encoded variable. Labels support accessibility/debugging and are more useful than generic strings such as `"Value"` when several dimensions exist.
+
+## Axes and Domains
+
+Customize axes only when defaults fail the data/story.
+
+- set explicit domains when comparisons require stable scales;
+- format dates/numbers for the user's locale and precision needs;
+- avoid overcrowded ticks/labels;
+- use logarithmic/alternative transforms only when users can interpret them.
+
+Do not hide axes solely for visual minimalism when that removes necessary context.
+
+## Scrolling
+
+Scrollable chart content is useful for dense ordered domains. Preserve a clear visible range and avoid creating so much horizontal content that users lose context.
+
+When scroll position is programmatic, treat it as UI state with stable domain values rather than pixel offsets.
+
+## Selection
+
+Use built-in chart selection APIs when they express the interaction.
+
+- single-value selection for inspecting one domain position;
+- range selection for brushing/filtering;
+- angle selection for radial charts where supported.
+
+Keep selected data in semantic values, not geometry coordinates. Use `ChartProxy` only when built-in selection is insufficient.
+
+## `ChartProxy`
+
+`ChartProxy` is appropriate for custom overlays, geometry lookup, and interaction that cannot be expressed with selection modifiers.
+
+Be careful with coordinate conversion and layout timing. Prefer built-in chart interactions when available because they track accessibility and framework evolution better.
+
+## Styling
+
+Use color, symbol, line style, and size as semantic visual channels.
+
+- prefer system/semantic colors and sufficient contrast;
+- keep categorical palettes stable;
+- avoid encoding the same concept differently across screens;
+- use legends when the encoding is not self-evident.
+
+Do not rely on color alone for essential distinctions.
 
 ## Annotations
 
-Use `annotation(position:)` on a mark when you need labels, callouts, or highlighted values attached to the plotted content.
+Annotations should clarify a selected/important value, not label every data point. Dense annotations quickly become harder to read than the chart itself.
 
-```swift
-BarMark(
-    x: .value("Month", item.month),
-    y: .value("Revenue", item.revenue)
-)
-.annotation(position: .top) {
-    Text(item.revenue.formatted())
-}
-```
+## Animation
 
-This is useful for selected values, thresholds, summaries, and direct labeling. Common positions include `.overlay`, `.top`, `.bottom`, `.leading`, and `.trailing`.
+Animate data changes only when motion helps users track continuity. Preserve stable IDs/domain values so marks transition meaningfully.
 
-## ChartProxy and Custom Touch Handling
+Avoid decorative repeated animation, especially for large datasets or reduced-motion users.
 
-Use `chartOverlay`/`chartBackground` (iOS 16+) or `chartGesture` (iOS 17+) with `ChartProxy` when built-in selection modifiers are not enough.
+## Chart3D
 
-```swift
-.chartOverlay { proxy in
-    GeometryReader { geometry in
-        Rectangle().fill(.clear).contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        guard let plotFrame = proxy.plotFrame else { return } // iOS 16: use proxy.plotAreaFrame
-                        let frame = geometry[plotFrame]
-                        let x = value.location.x - frame.origin.x
-                        guard x >= 0, x <= frame.size.width else { return }
-                        selectedDate = proxy.value(atX: x, as: Date.self)
-                    }
-                    .onEnded { _ in selectedDate = nil }
-            )
-    }
-}
-```
+Use Chart3D only when a third quantitative dimension materially improves understanding. 3D perspective can make comparison harder, so 2D is usually preferable for ordinary categorical/time-series data.
 
-Use `proxy.plotFrame` (iOS 17+) or `proxy.plotAreaFrame` (iOS 16) to get the plot area anchor.
+For iOS 26+ APIs:
 
-`ChartProxy` gives you lower-level access to:
+- gate only the 3D feature with availability checks;
+- provide a meaningful 2D representation when older targets matter;
+- keep camera/pose interaction accessible and nonessential to understanding the data.
 
-- `value(atX:as:)`, `value(atY:as:)`, and `value(at:as:)` for converting gesture coordinates into chart values
-- `position(forX:)`, `position(forY:)`, and `position(for:)` for placing custom overlays or indicators
-- `selectXValue(at:)`, `selectYValue(at:)`, `selectXRange(from:to:)`, and `selectYRange(from:to:)` for driving built-in selection from custom gestures
-- `plotFrame` (iOS 17+) or `plotAreaFrame` (iOS 16) with `plotSize` for converting between gesture coordinates and the plot area
+## Performance
 
-`select*` ChartProxy selection methods and `chartGesture` are available on iOS 17+.
+For large datasets:
 
-## Modifier Scope
+- aggregate/downsample to the resolution the display can communicate;
+- transform data outside the chart builder;
+- avoid mark-by-mark expensive formatting/allocation;
+- measure scrolling/selection responsiveness before adding custom caching.
 
-Apply chart-wide modifiers to the `Chart` container and mark-specific modifiers to the individual mark.
-
-```swift
-Chart(data) { item in
-    LineMark(
-        x: .value("Day", item.date),
-        y: .value("Value", item.value)
-    )
-    .interpolationMethod(.monotone)   // Mark-level modifier
-}
-.chartXAxis { AxisMarks() }            // Chart-level modifier
-.chartYScale(domain: 0...100)          // Chart-level modifier
-.chartPlotStyle { $0.background(.thinMaterial) }
-```
-
-## Styling and Visual Channels
-
-### Categorical Coloring
-
-Use `foregroundStyle(by: .value(...))` to color marks by a data property. Swift Charts generates a legend automatically.
-
-```swift
-Chart(sales) { item in
-    BarMark(
-        x: .value("Month", item.month),
-        y: .value("Revenue", item.revenue)
-    )
-    .foregroundStyle(by: .value("Region", item.region))
-}
-```
-
-**Avoid** applying `.foregroundStyle(.red)` per mark for categorical data — this suppresses the automatic legend and breaks accessibility.
-
-### Custom Color Scales
-
-Use `chartForegroundStyleScale` to control the mapping from data values to colors.
-
-```swift
-.chartForegroundStyleScale([
-    "North": .blue,
-    "South": .orange,
-    "East": .green
-])
-```
-
-For dynamic data where not all series appear at every point, use the mapping overload:
-
-```swift
-.chartForegroundStyleScale(domain: regions, mapping: { region in
-    colorForRegion(region)
-})
-```
-
-### Symbol and Size Channels
-
-Use `symbol(by:)` and `symbolSize(by:)` to encode additional data dimensions on `PointMark` and `LineMark`.
-
-```swift
-Chart(measurements) { item in
-    PointMark(
-        x: .value("Time", item.time),
-        y: .value("Value", item.value)
-    )
-    .foregroundStyle(by: .value("Category", item.category))
-    .symbol(by: .value("Category", item.category))
-    .symbolSize(by: .value("Weight", item.weight))
-}
-```
-
-### Legend Control
-
-```swift
-.chartLegend(.visible)
-.chartLegend(.hidden)
-.chartLegend(position: .bottom, alignment: .center)
-```
-
-## Composing Multiple Marks
-
-Combine different mark types inside the same `Chart` closure:
-
-```swift
-// Line with points
-LineMark(x: .value("Day", day.date), y: .value("Steps", day.count))
-    .interpolationMethod(.monotone)
-PointMark(x: .value("Day", day.date), y: .value("Steps", day.count))
-
-// Bars with threshold line
-BarMark(x: .value("Month", item.month), y: .value("Revenue", item.revenue))
-RuleMark(y: .value("Target", 10_000))
-    .foregroundStyle(.red)
-    .lineStyle(StrokeStyle(dash: [5, 3]))
-```
-
-## Animating Chart Data
-
-Chart marks animate automatically when data identity is stable and changes are wrapped in an animation.
-
-```swift
-withAnimation(.easeInOut) {
-    chartData = updatedData
-}
-```
-
-**Always** use `Identifiable` models (or explicit `id:`) so Swift Charts can match old and new data points and animate transitions between them.
-
-## Best Practices
-
-### Do
-
-- Use semantic `.value(_, _)` labels so axes and accessibility read clearly
-- Prefer `Identifiable` models (or explicit `id:`) for stable chart data identity
-- Use `foregroundStyle(by:)` for categorical series to get automatic legends and accessibility
-- Use `RuleMark` for goals, thresholds, and selected-value indicators
-- Use explicit `AxisMarks(values:)` when automatic tick generation gets crowded
-- Use `chartXScale` and `chartYScale` when you need stable visual comparisons
-- Use `chartXSelection(range:)` or `chartYSelection(range:)` for brushed selection
-- Gate iOS 17+ APIs such as `SectorMark` and selection with `#available`
-
-### Don't
-
-- Put chart-wide modifiers such as `chartXAxis` or `chartXSelection` on individual marks
-- Apply manual `.foregroundStyle(.color)` per mark for categorical data — use `foregroundStyle(by:)` instead
-- Rely on unstable identities when chart data can be inserted, removed, or reordered
-- Use string values for naturally numeric or date-based axes unless you want categorical behavior
-- Stack unrelated series by default just because `BarMark` and `AreaMark` allow it
-- Force every tick label to display when collision handling or stride values would be clearer
-- Assume selection returns a model object; it only returns the plottable axis value
-- Forget that range selection is available only for X and Y axes, not angle selection
+Rendering every source sample is often unnecessary when many values map to the same pixels.
 
 ## Accessibility
 
-Swift Charts provides built-in accessibility. VoiceOver users get **Describe Chart** (overview), **Audio Graph** (sonification), and **Chart Detail** (point-by-point exploration) automatically.
+Charts must communicate the same information without vision/color assumptions.
 
-**Always** use clear, descriptive strings in `.value(_, _)` — these labels are read by VoiceOver and Audio Graph.
+- provide meaningful labels/values for data points and series;
+- support Dynamic Type around supporting text;
+- ensure category distinction beyond color where needed;
+- consider audio graph/accessibility representations when appropriate;
+- provide a textual summary/table for complex analytics when that better serves assistive users.
 
-```swift
-// ✓ Descriptive labels
-LineMark(x: .value("Date", entry.date), y: .value("Daily Steps", entry.count))
+## Common Failures
 
-// ✗ Generic labels
-LineMark(x: .value("X", entry.date), y: .value("Y", entry.count))
-```
+- unstable/random IDs causing animation churn;
+- expensive sorting/filtering inside the chart builder;
+- decorative 3D for inherently 2D comparisons;
+- too many series/marks without hierarchy;
+- color-only encoding;
+- custom gestures where built-in selection already solves the interaction;
+- applying one availability gate to unrelated older APIs.
 
-### Custom Audio Graphs
+## Review Checklist
 
-For advanced accessibility, conform to `AXChartDescriptorRepresentable` and implement `makeChartDescriptor()`:
-
-```swift
-struct StepsChart: View, AXChartDescriptorRepresentable {
-    let steps: [DailySteps]
-    var body: some View {
-        Chart(steps) { day in
-            LineMark(x: .value("Date", day.date), y: .value("Steps", day.count))
-        }
-        .accessibilityChartDescriptor(self)
-    }
-    func makeChartDescriptor() -> AXChartDescriptor { /* ... */ }
-}
-```
-
-## Version Breakdown
-
-- iOS 16+: `Chart`, custom axes, scales, `BarMark`, `LineMark`, `AreaMark`, `PointMark`, `RectangleMark`, `RuleMark`, `ChartProxy`, `chartOverlay`, `chartBackground`
-- iOS 17+: `SectorMark`, `chartXSelection`, `chartYSelection`, `chartAngleSelection`, `chartScrollableAxes`, `chartGesture`
-- iOS 18+: `AreaPlot`, `BarPlot`, `LinePlot`, `PointPlot`, `RectanglePlot`, `RulePlot`, `SectorPlot`, function plotting
-- iOS 26+: `Chart3D`, `SurfacePlot`, Z-axis marks, 3D camera and pose APIs
-
-## Summary Checklist
-
-- [ ] `import Charts` is present in files using chart types
-- [ ] Deployment target matches the APIs used
-- [ ] Chart data models use `Identifiable` (or `Chart(data, id:)`)
-- [ ] Axes use `AxisMarks` when default ticks are too dense
-- [ ] `foregroundStyle(by:)` used for categorical series (not manual per-mark colors)
-- [ ] Selection uses correct binding type (`value:` for single, `range:` for brushed)
-- [ ] iOS 17+, iOS 18+, and iOS 26+ APIs are guarded with `#available`
-- [ ] `.value()` labels are descriptive for VoiceOver and Audio Graph accessibility
+1. Does the chart answer a specific question?
+2. Are domains, units, labels, and identity correct?
+3. Is the visual encoding consistent and accessible?
+4. Are interaction/selection semantic rather than geometry-driven where possible?
+5. Are newer APIs narrowly availability-gated?
+6. Is dataset size appropriate for direct rendering?

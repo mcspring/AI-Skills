@@ -1,389 +1,135 @@
-# SwiftUI View Structure Reference
+# SwiftUI View Structure
 
-## Table of Contents
+Use this reference for view decomposition, data dependencies, builders, containers, and reusable component boundaries.
 
-- [View Structure Principles](#view-structure-principles)
-- [Prefer Modifiers Over Conditional Views](#prefer-modifiers-over-conditional-views)
-- [Extract Subviews, Not Computed Properties](#extract-subviews-not-computed-properties)
-- [When @ViewBuilder Functions Are Acceptable](#when-viewbuilder-functions-are-acceptable)
-- [When to Extract Subviews](#when-to-extract-subviews)
-- [Container View Pattern](#container-view-pattern)
-- [ZStack vs overlay/background](#zstack-vs-overlaybackground)
-- [Compositing Group Before Clipping](#compositing-group-before-clipping)
-- [Reusable Styling with ViewModifier](#reusable-styling-with-viewmodifier)
-- [Skeleton Loading with Redacted Views](#skeleton-loading-with-redacted-views)
-- [UIViewRepresentable Essentials](#uiviewrepresentable-essentials)
-- [Summary Checklist](#summary-checklist)
+## Split by Responsibility, Not Line Count
 
-## View Structure Principles
+Extract a subview when it creates a meaningful boundary:
 
-SwiftUI's diffing algorithm compares view hierarchies to determine what needs updating. Proper view composition directly impacts performance.
+- independent state/lifecycle;
+- narrower data dependencies/invalidation;
+- reusable semantic component;
+- complex conditional/layout logic that becomes easier to reason about separately;
+- preview/test/accessibility behavior that deserves isolation.
 
-## Prefer Modifiers Over Conditional Views
+Do not split every few lines into tiny forwarding views; indirection can make data flow harder to follow.
 
-**Prefer "no-effect" modifiers over conditionally including views.** When you introduce a branch, consider whether you're representing multiple views or two states of the same view.
+## Keep Dependencies Narrow
 
-### Use Opacity Instead of Conditional Inclusion
+Pass the values/actions a child needs rather than a broad model/environment object when narrower inputs improve clarity or invalidation behavior.
 
-```swift
-// Good - same view, different states
-SomeView()
-    .opacity(isVisible ? 1 : 0)
+A child that only displays a value should normally receive a value. A child that edits the parent's value may receive a binding. A semantic action can often be an explicit closure instead of exposing broad mutable state.
 
-// Avoid - creates/destroys view identity
-if isVisible {
-    SomeView()
-}
-```
+See `state-management.md`.
 
-**Why**: Conditional view inclusion can cause loss of state, poor animation performance, and breaks view identity. Using modifiers maintains view identity across state changes.
+## View as Value
 
-### When Conditionals Are Appropriate
+SwiftUI `View` values are lightweight descriptions. Avoid reasoning about a view struct instance as a long-lived controller object.
 
-Use conditionals when you truly have **different views**, not different states:
+Persistent state belongs in SwiftUI state/observable models/resources with explicit ownership, not arbitrary mutable stored properties on the view value.
 
-```swift
-// Correct - fundamentally different views
-if isLoggedIn {
-    DashboardView()
-} else {
-    LoginView()
-}
+## `body`
 
-// Correct - optional content
-if let user {
-    UserProfileView(user: user)
-}
-```
+Keep `body` declarative and cheap:
 
-### Conditional View Modifier Extensions Break Identity
+- compose views;
+- derive inexpensive presentation values;
+- choose branches/layout;
+- attach effects/tasks/actions.
 
-A common pattern is an `if`-based `View` extension for conditional modifiers. This changes the view's return type between branches, which destroys view identity and breaks animations:
+Move I/O, heavy computation, decoding, and side-effectful state mutation out of body evaluation.
+
+## Conditional Structure and Identity
+
+Changing structural branches can change view identity/state lifetime.
+
+Use conditional views when the UI is genuinely different. When only style/visibility changes, modifiers may preserve identity more naturally.
+
+Do not force one approach globally: state reset can be either a bug or the intended consequence of changing identity.
+
+## `@ViewBuilder`
+
+Use builders where callers should provide declarative child content.
+
+Keep builder APIs simple:
 
 ```swift
-// Problematic -- different return types per branch
-extension View {
-    @ViewBuilder func `if`<T: View>(_ condition: Bool, transform: (Self) -> T) -> some View {
-        if condition {
-            transform(self)  // Returns T
-        } else {
-            self              // Returns Self
-        }
-    }
-}
-```
-
-Prefer applying the modifier directly with a ternary or always-present modifier:
-
-```swift
-// Good -- same view identity maintained
-Text("Hello")
-    .opacity(isHighlighted ? 1 : 0.5)
-
-// Good -- modifier always present, value changes
-Text("Hello")
-    .foregroundStyle(isError ? .red : .primary)
-```
-
-## Extract Subviews, Not Computed Properties
-
-### The Problem with @ViewBuilder Functions
-
-When you use `@ViewBuilder` functions or computed properties for complex views, the entire function re-executes on every parent state change:
-
-```swift
-// BAD - re-executes complexSection() on every tap
-struct ParentView: View {
-    @State private var count = 0
+struct Card<Content: View>: View {
+    @ViewBuilder let content: () -> Content
 
     var body: some View {
-        VStack {
-            Button("Tap: \(count)") { count += 1 }
-            complexSection()  // Re-executes every tap!
-        }
-    }
-
-    @ViewBuilder
-    func complexSection() -> some View {
-        // Complex views that re-execute unnecessarily
-        ForEach(0..<100) { i in
-            HStack {
-                Image(systemName: "star")
-                Text("Item \(i)")
-                Spacer()
-                Text("Detail")
-            }
-        }
-    }
-}
-```
-
-### The Solution: Separate Structs
-
-Extract to separate `struct` views. SwiftUI can skip their `body` when inputs don't change:
-
-```swift
-// GOOD - ComplexSection body SKIPPED when its inputs don't change
-struct ParentView: View {
-    @State private var count = 0
-
-    var body: some View {
-        VStack {
-            Button("Tap: \(count)") { count += 1 }
-            ComplexSection()  // Body skipped during re-evaluation
-        }
-    }
-}
-
-struct ComplexSection: View {
-    var body: some View {
-        ForEach(0..<100) { i in
-            HStack {
-                Image(systemName: "star")
-                Text("Item \(i)")
-                Spacer()
-                Text("Detail")
-            }
-        }
-    }
-}
-```
-
-### Why This Works
-
-1. SwiftUI compares the `ComplexSection` struct (which has no properties)
-2. Since nothing changed, SwiftUI skips calling `ComplexSection.body`
-3. The complex view code never executes unnecessarily
-
-## When @ViewBuilder Functions Are Acceptable
-
-Use for small, simple sections (a few views, no expensive computation) that don't affect performance. `@ViewBuilder` functions work particularly well for static content that doesn't depend on any `@State` or `@Binding`, since SwiftUI won't need to diff them independently. Extract to a separate `struct` when the section is complex, depends on state, or needs to be skipped during re-evaluation.
-
-## When to Extract Subviews
-
-Extract complex views into separate subviews when:
-- The view has multiple logical sections or responsibilities
-- The view contains reusable components
-- The view body becomes difficult to read or understand
-- You need to isolate state changes for performance
-- The view is becoming large (keep views small for better performance)
-
-## Container View Pattern
-
-### Avoid Closure-Based Content
-
-Closures can't be compared, causing unnecessary re-renders:
-
-```swift
-// BAD - closure prevents SwiftUI from skipping updates
-struct MyContainer<Content: View>: View {
-    let content: () -> Content
-
-    var body: some View {
-        VStack {
-            Text("Header")
-            content()  // Always called, can't compare closures
-        }
-    }
-}
-
-// Usage forces re-render on every parent update
-MyContainer {
-    ExpensiveView()
-}
-```
-
-### Use @ViewBuilder Property Instead
-
-```swift
-// GOOD - view can be compared
-struct MyContainer<Content: View>: View {
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        VStack {
-            Text("Header")
-            content  // SwiftUI can compare and skip if unchanged
-        }
-    }
-}
-
-// Usage - SwiftUI can diff ExpensiveView
-MyContainer {
-    ExpensiveView()
-}
-```
-
-## ZStack vs overlay/background
-
-Use `ZStack` to **compose multiple peer views** that should be layered together and jointly define layout.
-
-Prefer `overlay` / `background` when you’re **decorating a primary view**.  
-Not primarily because they don’t affect layout size, but because they **express intent and improve readability**: the view being modified remains the clear layout anchor.
-
-A key difference is **size proposal behavior**:
-- In `overlay` / `background`, the child view implicitly adopts the size proposed to the parent when it doesn’t define its own size, making decorative attachments feel natural and predictable.
-- In `ZStack`, each child participates independently in layout, and no implicit size inheritance exists. This makes it better suited for peer composition, but less intuitive for simple decoration.
-
-Use `ZStack` (or another container) when the “decoration” **must explicitly participate in layout sizing**—for example, when reserving space, extending tappable/visible bounds, or preventing overlap with neighboring views.
-
-### Examples
-
-```swift
-// GOOD - decoration via overlay (layout anchored to button)
-Button("Continue") { }
-    .overlay(alignment: .trailing) {
-        Image(systemName: "lock.fill").padding(.trailing, 8)
-    }
-
-// BAD - ZStack when overlay suffices (layout no longer anchored to button)
-ZStack(alignment: .trailing) {
-    Button("Continue") { }
-    Image(systemName: "lock.fill").padding(.trailing, 8)
-}
-
-// GOOD - background shape takes parent size
-HStack(spacing: 12) { Text("Inbox"); Text("Next") }
-    .background { Capsule().strokeBorder(.blue, lineWidth: 2) }
-```
-
-## Compositing Group Before Clipping
-
-**Always add `.compositingGroup()` before `.clipShape()` when clipping layered views (`.overlay` or `.background`).** Without it, each layer is antialiased separately and then composited. Where antialiased edges overlap — typically at rounded corners — you get visible color fringes (semi-transparent pixels of different colors blending together).
-
-```swift
-let shape = RoundedRectangle(cornerRadius: 16)
-
-// BAD - each layer antialiased separately, producing color fringes at corners
-Color.red
-    .overlay(.white, in: shape)
-    .clipShape(shape)
-    .frame(width: 200, height: 150)
-
-// GOOD - layers composited first, antialiasing applied once during clipping
-Color.red
-    .overlay(.white, in: .rect)
-    .compositingGroup()
-    .clipShape(shape)
-    .frame(width: 200, height: 150)
-```
-
-`.compositingGroup()` forces all child layers to be rendered into a single offscreen buffer before the clip is applied. This means antialiasing only happens once — on the final composited result — eliminating the fringe artifacts.
-
-## Reusable Styling with ViewModifier
-
-Extract repeated modifier combinations into a `ViewModifier` struct. Expose via a `View` extension for autocompletion:
-
-```swift
-private struct CardStyle: ViewModifier {
-    func body(content: Content) -> some View {
-        content
+        content()
             .padding()
-            .background(Color(.secondarySystemBackground))
-            .clipShape(.rect(cornerRadius: 12))
-    }
-}
-
-extension View {
-    func cardStyle() -> some View {
-        modifier(CardStyle())
     }
 }
 ```
 
-### Custom ButtonStyle
+Avoid type erasure (`AnyView`) unless heterogeneous runtime storage/API boundaries genuinely require it. Builders/opaque return types preserve more static structure.
 
-Use the `ButtonStyle` protocol for reusable button designs. Use `PrimitiveButtonStyle` only when you need custom interaction handling (e.g., simultaneous gestures):
+## Content/Container APIs
+
+For reusable containers:
+
+- expose semantic configuration separately from child content;
+- use `@ViewBuilder`/current content-builder APIs for child views;
+- avoid introspecting arbitrary child structure unless a container API is specifically designed for it;
+- prefer native container values/layout APIs over preference-key hacks when available.
+
+The 2027 SDK generation evolves builder internals/API (`ContentBuilder` in relevant APIs). Let compiler migrations guide source changes rather than duplicating old builder machinery.
+
+## Environment
+
+Use environment for values naturally shared by a subtree (appearance, locale, dependencies with subtree semantics).
+
+Avoid turning environment into an invisible global service registry. If a dependency is essential to understanding/reusing a component, explicit input may be clearer.
+
+## Actions
+
+Prefer semantic actions:
 
 ```swift
-struct PrimaryButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .bold()
-            .foregroundStyle(.white)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .background(Color.accentColor)
-            .clipShape(Capsule())
-            .scaleEffect(configuration.isPressed ? 0.95 : 1)
-            .animation(.smooth, value: configuration.isPressed)
-    }
-}
+Row(item: item, onDelete: { delete(item.id) })
 ```
 
-### Discoverability with Static Member Lookup
+over handing a child an entire mutable store only so it can call one operation.
 
-Make custom styles and modifiers discoverable via leading-dot syntax:
+For controls that conceptually edit a value, a binding can be the more natural API.
 
-```swift
-extension ButtonStyle where Self == PrimaryButtonStyle {
-    static var primary: PrimaryButtonStyle { .init() }
-}
+## Layout Containers
 
-// Usage: .buttonStyle(.primary)
-```
+Extract layout components when layout behavior itself is reusable or complicated. Consider custom `Layout` when repeatedly coordinating measurements/placement; see `layout-best-practices.md`.
 
-This pattern works for any SwiftUI style protocol (`ButtonStyle`, `ListStyle`, `ToggleStyle`, etc.).
+Do not use `GeometryReader` solely because a subview boundary exists.
 
-## Skeleton Loading with Redacted Views
+## Modifiers
 
-Use `.redacted(reason: .placeholder)` to show skeleton views while data loads. Use `.unredacted()` to opt out specific views:
+Extract a custom `ViewModifier` when a group of modifiers represents one reusable semantic behavior/style. Avoid modifiers that hide substantial navigation/data mutations behind styling-looking APIs.
 
-```swift
-VStack(alignment: .leading) {
-    Text(article?.title ?? String(repeating: "X", count: 20))
-        .font(.headline)
-    Text(article?.author ?? String(repeating: "X", count: 12))
-        .font(.subheadline)
-    Text("SwiftLee")
-        .font(.caption)
-        .unredacted()
-}
-.redacted(reason: article == nil ? .placeholder : [])
-```
+## Platform-Specific Structure
 
-Apply `.redacted` on a container to redact all children at once.
+Use conditional compilation/availability at the narrowest platform/API boundary. Keep shared view semantics common when possible, but do not contort macOS/iOS UIs into one structure when platform interaction models differ.
 
-## UIViewRepresentable Essentials
+## Performance
 
-When bridging UIKit views into SwiftUI:
+Subview extraction can reduce invalidation scope when it narrows dependencies; it is not a guaranteed optimization by itself.
 
-- `makeUIView(context:)` is called **once** to create the UIKit view
-- `updateUIView(_:context:)` is called on **every SwiftUI redraw** to sync state
-- The representable struct itself is **recreated on every redraw** -- avoid heavy work in its init
-- Use a `Coordinator` for delegate callbacks and two-way communication
+Measure suspicious update behavior with SwiftUI diagnostics/Instruments. See `performance-patterns.md`.
 
-```swift
-struct MapView: UIViewRepresentable {
-    let coordinate: CLLocationCoordinate2D
+## Common Failures
 
-    func makeUIView(context: Context) -> MKMapView {
-        let map = MKMapView()
-        map.delegate = context.coordinator
-        return map
-    }
+- monolithic view owns unrelated state and dependencies;
+- tiny one-line components create excessive navigation without semantic benefit;
+- broad environment/model dependency for one displayed value;
+- side effects or expensive sorting/decoding in `body`;
+- `AnyView` used to “fix” builder errors unnecessarily;
+- state unexpectedly resets because structural identity changed;
+- generic container APIs become more complex than their callers.
 
-    func updateUIView(_ map: MKMapView, context: Context) {
-        map.setCenter(coordinate, animated: true)
-    }
+## Review Questions
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    class Coordinator: NSObject, MKMapViewDelegate { }
-}
-```
-
-## Summary Checklist
-
-- [ ] Prefer modifiers over conditional views for state changes
-- [ ] Avoid `if`-based conditional modifier extensions (they break view identity)
-- [ ] Complex views extracted to separate subviews
-- [ ] Views kept small for better performance
-- [ ] `@ViewBuilder` functions only for simple sections
-- [ ] Container views use `@ViewBuilder let content: Content`
-- [ ] Extract views when they have multiple responsibilities or become hard to read
-- [ ] Reusable styling extracted into `ViewModifier` or `ButtonStyle`
-- [ ] Custom styles exposed via static member lookup for discoverability
-- [ ] Use `.redacted(reason: .placeholder)` for skeleton loading states
-- [ ] `.compositingGroup()` before `.clipShape()` on layered views (overlay/background) to avoid antialiasing fringes
-- [ ] UIViewRepresentable: heavy work in make/update, not in struct init
+1. Does each view have one understandable responsibility?
+2. Are ownership and dependencies visible?
+3. Would extraction create a useful state/invalidation/reuse boundary?
+4. Is `body` declarative and cheap?
+5. Are conditional branches intentionally changing identity/lifetime?
+6. Can a native builder/container/layout API replace custom plumbing?

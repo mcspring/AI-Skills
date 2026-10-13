@@ -1,89 +1,80 @@
 # Naming Conventions
 
-Go favors short, readable names. Capitalization controls visibility — uppercase exported, lowercase unexported. All identifiers MUST use MixedCaps, NEVER underscores.
+Go favors short names, package context, and consistency with the standard library. Prefer idiomatic names over rigid naming templates.
 
-> "Clear is better than clever." — Go Proverbs
+## Core Conventions
 
-## Quick Reference
+| Element | Guidance | Example |
+|---|---|---|
+| Package | short, lowercase, meaningful | `http`, `json`, `bytes` |
+| Exported identifier | MixedCaps | `ReadAll`, `HTTPClient` |
+| Unexported identifier | mixedCaps | `parseToken`, `userCount` |
+| Constant | MixedCaps, not C-style ALL_CAPS | `MaxRetries` |
+| Error variable | commonly `ErrX` when exported/sentinel | `ErrNotFound` |
+| Error type | descriptive type name | `PathError` |
+| Test | `TestXxx` / descriptive subtests | `TestParseToken` |
 
-| Element | Convention | Example |
-| --- | --- | --- |
-| Package | lowercase, single word | `json`, `http`, `tabwriter` |
-| File | lowercase, underscores OK | `user_handler.go` |
-| Exported name | UpperCamelCase | `ReadAll`, `HTTPClient` |
-| Unexported | lowerCamelCase | `parseToken`, `userCount` |
-| Interface | method name + `-er` | `Reader`, `Closer`, `Stringer` |
-| Struct | MixedCaps noun | `Request`, `FileHeader` |
-| Constant | MixedCaps (not ALL_CAPS) | `MaxRetries`, `defaultTimeout` |
-| Receiver | 1–2 letter abbreviation | `func (s *Server)`, `func (b *Buffer)` |
-| Error variable | `Err` prefix | `ErrNotFound`, `ErrTimeout` |
-| Error type | `Error` suffix | `PathError`, `SyntaxError` |
-| Constructor | `New` or `NewTypeName` | `ring.New`, `http.NewRequest` |
-| Boolean field | `is`, `has`, `can` prefix | `isReady`, `IsConnected()` |
-| Test function | `Test` + function name | `TestParseToken` |
-| Acronym | all caps or all lower | `URL`, `HTTPServer`, `xmlParser` |
-| Option func | `With` + field name | `WithPort()`, `WithLogger()` |
-| Enum (iota) | type prefix, zero = unknown | `StatusUnknown` at 0 |
-| Error string | lowercase, no punctuation | `"image: unknown format"` |
+Use underscores where the language/ecosystem requires them (for example generated/cgo-related names or file names); ordinary Go identifiers conventionally use MixedCaps.
 
-## MixedCaps
+## Package Context and Stuttering
 
-All identifiers use `MixedCaps` — NEVER underscores. Only exceptions: test subcases, generated code, cgo.
+The package name already appears at call sites, so avoid repeating it when the shorter name remains clear:
 
 ```go
-// ✓ Good
-MaxPacketSize
-userCount
+http.Client
+json.Decoder
+ring.New
+```
+
+`http.HTTPClient` or `json.JSONDecoder` usually stutter. This is a readability heuristic, not a rule to shorten names until meaning is lost.
+
+## Initialisms
+
+Keep common initialisms consistently capitalized within identifiers:
+
+```go
+URL
+HTTPServer
 parseHTTPResponse
-
-// ✗ Bad
-MAX_PACKET_SIZE   // C/Python style
-max_packet_size   // snake_case
-kMaxBufferSize    // Hungarian notation
+userID
 ```
 
-## Avoid Stuttering
+Follow the project's established spelling for domain-specific abbreviations.
 
-Package name is always at call site — don't repeat it:
+## Constructors
 
-```go
-http.Client       // not http.HTTPClient
-json.Decoder      // not json.JSONDecoder
-user.New()        // not user.NewUser()
-config.Parse()    // not config.ParseConfig()
-```
+`New` is conventional when a package has one obvious primary constructed type. `NewRequest`, `NewClient`, or other descriptive constructors are appropriate when the package exposes several constructors or the distinction matters.
 
-## Key Conventions
+Do not create a constructor when the useful zero value or a struct literal is clearer and safe.
 
-**Constructors:** Single primary type → `New()`. Multiple types → `NewTypeName()`.
+## Receivers
 
-**Boolean fields:** Unexported booleans use `is`/`has`/`can` prefix: `isConnected`, `hasPermission`. Exported getter keeps prefix: `IsConnected() bool`.
+Receiver names are typically short and derived from the type (`c *Client`, `b *Buffer`). Keep the same receiver name across that type's methods where practical.
 
-**Error strings:** Fully lowercase including acronyms: `"invalid message id"` not `"invalid message ID"`. Sentinel errors include package name: `errors.New("apiclient: not found")`.
+Avoid `this`/`self` because they add little information in Go, but choose clarity over a fixed receiver-name length.
 
-**Enum zero values:** Always `Unknown`/`Invalid` at iota 0. `StatusUnknown` catches uninitialized.
+## Getters and Booleans
 
-**Getters:** No `Get` prefix — `user.Name()` not `user.GetName()`. Keep `Is`/`Has`/`Can` for booleans.
+Go getters usually omit `Get`: `Name()` rather than `GetName()`. A setter, when useful, may be `SetName`.
 
-**Receivers:** 1–2 letter abbreviation, consistent across all methods of a type. Never `this` or `self`.
+Boolean names should read clearly at the call site. Prefixes such as `Is`, `Has`, or `Can` are useful when they improve the sentence, but are not mandatory for every boolean field.
 
-**Subtest names:** Lowercase descriptive phrases: `"valid id"`, `"empty input"`.
+## Zero Values and Enum-like Constants
 
-**Scope-based length:** Short scopes → short names (`i` for 3-line loop). Long scopes → descriptive names.
+A zero value such as `Unknown`/`Invalid` is useful when it makes an uninitialized enum-like value safe and explicit. Do not add an artificial unknown case when zero already has a natural valid meaning.
 
-## Common Mistakes
+## Error Strings
 
-| Mistake | Fix |
-| --- | --- |
-| `ALL_CAPS` constants | MixedCaps (`MaxRetries`) |
-| `GetName()` getter | `Name()` — omit Get |
-| `Url`, `Http` acronyms | All caps: `URL`, `HTTP` |
-| `this`/`self` receiver | 1–2 letter abbreviation |
-| `util`/`helper` packages | Specific names describing content |
-| `http.HTTPClient` stuttering | `http.Client` |
-| `user.NewUser()` constructor | `user.New()` for single type |
-| `connected bool` field | `isConnected` |
-| `"invalid message ID"` error | `"invalid message id"` — lowercase |
-| `StatusReady` at iota 0 | `StatusUnknown` at 0 |
-| `snake_case` identifiers | `mixedCaps` |
-| Unnecessary import aliases | Only alias on collision |
+Errors that are composed/wrapped by callers conventionally begin lowercase and avoid terminal punctuation unless the text contains proper nouns or other formatting that requires it.
+
+## Scope and Length
+
+Use short names in small scopes (`i`, `r`, `b`) and more descriptive names as scope or ambiguity grows. Avoid both single-letter names across large scopes and redundant long names that merely repeat type/package context.
+
+## Review Questions
+
+- Does the name read naturally at its call site?
+- Does the package already supply context that the identifier repeats?
+- Is the abbreviation conventional and consistent?
+- Is a zero-value name expressing a real semantic state?
+- Would renaming improve clarity enough to justify API churn?

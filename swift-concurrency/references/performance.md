@@ -1,539 +1,113 @@
-# Performance
+# Swift Concurrency Performance
 
-Use this when:
+Use this reference only when there is measured latency, responsiveness, throughput, or executor contention to investigate.
 
-- Async code is slower than expected or causing UI hangs.
-- You need to choose between synchronous, asynchronous, and parallel execution.
-- You are profiling concurrency overhead with Instruments.
+## Principle
 
-Skip this file if:
+Concurrency is a correctness and responsiveness model first. More tasks, actors, or suspension points do not automatically make code faster.
 
-- The issue is a compiler diagnostic about isolation or Sendable. Use `actors.md` or `sendable.md`.
-- You mainly need to fix a memory leak. Use `memory-management.md`.
+Measure before restructuring.
 
-## Core Principles
+## Start With Instruments
 
-### Measurement is essential
+Use the Swift Concurrency and Time Profiler instruments to answer:
 
-Can't improve what you don't measure. Establish baseline before optimizing.
+- Is the main actor blocked?
+- Are tasks spending time runnable, running, or suspended?
+- Is an actor a contention hotspot?
+- Are too many tiny tasks being created?
+- Is the actual bottleneck CPU, I/O, lock contention, allocation, or an external service?
 
-### Start simple, optimize later
+Do not infer these from source shape alone.
 
-```
-Synchronous → Asynchronous → Parallel
-```
+## Main-Actor Responsiveness
 
-Move right only when proven necessary.
+A UI hang is usually caused by synchronous work that occupies the main actor too long.
 
-### Three phases of concurrency
+Fix the ownership/work boundary rather than wrapping everything in `Task`:
 
-1. **No concurrency** - Synchronous method
-2. **Suspend without parallelism** - Asynchronous method
-3. **Advanced concurrency** - Parallel execution
+- keep UI state updates main-actor isolated;
+- move genuinely expensive CPU work to an appropriate concurrent execution boundary;
+- use async I/O APIs instead of blocking I/O;
+- batch tiny state updates when doing so preserves behavior.
 
-## Common Performance Issues
+## Actor Contention
 
-### UI hangs
+Actors are useful ownership boundaries but can become hot serialization points.
 
-Too much work on main thread causes interface freezes.
+Investigate:
 
-### Poor parallelization
+- unrelated state sharing one actor;
+- long synchronous actor methods;
+- work performed inside the actor that could use an immutable snapshot elsewhere;
+- repeated actor hops in tight loops.
 
-Heavy work funneled into single task instead of parallel execution.
-
-### Actor contention
-
-Tasks waiting on busy actor, causing unnecessary suspensions.
-
-## Using Xcode Instruments
-
-### Swift Concurrency template
-
-Profile with CMD + I → Select "Swift Concurrency" template.
-
-**Instruments included**:
-- **Swift Tasks**: Track running, alive, total tasks
-- **Swift Actors**: Show actor execution and queue size
-
-### Key metrics
-
-```
-Tasks:
-- Total count
-- Running vs suspended
-- Task states (Creating, Running, Suspended, Ending)
-
-Actors:
-- Queue size
-- Execution time
-- Contention points
-
-Main Thread:
-- Hangs
-- Blocked time
-```
-
-### Task states
-
-- **Creating**: Task being initialized
-- **Running**: Actively executing
-- **Suspended**: Waiting (at await)
-- **Ending**: Completing
-
-## Identifying Issues
-
-### Main thread blocked
-
-```swift
-// ❌ All work on main thread
-@MainActor
-func generateWallpapers() {
-    Task {
-        for _ in 0..<100 {
-            let image = generator.generate() // Blocks main thread
-            wallpapers.append(image)
-        }
-    }
-}
-```
-
-**Instruments shows**: Long main thread hang, no parallelism.
-
-### Solution: Move to background
-
-```swift
-@MainActor
-func generateWallpapers() {
-    Task {
-        for _ in 0..<100 {
-            let image = await backgroundGenerator.generate()
-            wallpapers.append(image)
-        }
-    }
-}
-
-actor BackgroundGenerator {
-    func generate() -> Image {
-        // Heavy work in background
-    }
-}
-```
-
-### Actor contention
-
-```swift
-actor Generator {
-    func generate() -> Image {
-        // Heavy work
-    }
-}
-
-// ❌ Sequential through actor
-for _ in 0..<100 {
-    let image = await generator.generate() // Queue size = 1
-}
-```
-
-**Instruments shows**: Actor queue never exceeds 1, no parallelism.
-
-### Solution: Remove unnecessary actor
-
-```swift
-struct Generator {
-    @concurrent
-    static func generate() async -> Image {
-        // Heavy work, no shared state
-    }
-}
-
-// ✅ Parallel execution
-for i in 0..<100 {
-    Task(name: "Image \(i)") {
-        let image = await Generator.generate()
-        await addToCollection(image)
-    }
-}
-```
+Split actors only when state invariants permit independent ownership. Do not shard an actor merely to reduce an `await` count.
 
 ## Suspension Points
 
-### What creates suspension
+Suspension itself has overhead, but the larger concern is semantic: suspension allows other work to run and actor state to change.
 
-Every `await` is potential suspension point:
+Reduce suspension when:
 
-```swift
-let data = await fetchData() // May suspend
-```
+- an async helper does no asynchronous work;
+- several same-actor operations can be expressed as one isolated operation;
+- a hot loop repeatedly hops actors for tiny reads/writes.
 
-**Not guaranteed** - if isolation matches, may not suspend.
+Do not remove suspension that is required for I/O, fairness, or correct ownership.
 
-### Suspension surface area
+## Parallelism
 
-Code between suspension points. Larger = harder to reason about:
-- Actor invariants
-- Performance
-- Thread hops
-- Reentrancy
-- State consistency
+Parallelize when work is independent and expensive enough to outweigh task/scheduling overhead.
 
-### Goal
+Poor candidates include:
 
-- Do work before crossing isolation
-- Cross once
-- Finish job
-- Only cross again when necessary
+- tiny transformations;
+- workloads constrained by one downstream resource;
+- memory-bandwidth-bound work that already saturates hardware;
+- operations whose ordering/invariants force serialization anyway.
 
-## Reducing Suspensions
+Use bounded concurrency for large input sets or rate-limited external systems.
 
-### 1. Use synchronous methods
+## Task Volume
 
-```swift
-// ❌ Unnecessary async
-private func scale(_ image: CGImage) async { }
+High task counts can increase allocation, scheduling, and bookkeeping overhead.
 
-func process(_ image: CGImage) async {
-    let scaled = await scale(image) // Suspension point
-}
+Prefer coarse useful units of work. For large streams, use batching or bounded groups instead of unbounded task-per-element fan-out.
 
-// ✅ Synchronous helper
-private func scale(_ image: CGImage) { }
+## Cancellation and Wasted Work
 
-func process(_ image: CGImage) async {
-    let scaled = scale(image) // No suspension
-}
-```
+Responsiveness improves when obsolete work stops promptly.
 
-**Rule**: If method doesn't need to suspend, don't mark async.
+- cancel replaced searches/loads;
+- check cancellation in CPU-heavy loops;
+- avoid starting children after failure/cancellation makes them irrelevant;
+- keep cancellation shields limited to required cleanup.
 
-### 2. Prevent actor reentrancy
-
-Complete all state mutations before suspending. Don't mutate actor state after `await`.
-
-> See [actors.md § Actor Reentrancy](actors.md#actor-reentrancy) for full examples.
-
-### 3. Inherit isolation
-
-```swift
-// ❌ Switches isolation
-@MainActor
-func update() async {
-    await process() // Switches away from main actor
-}
-
-// ✅ Inherits isolation (still requires await -- but no executor hop)
-@MainActor
-func update() async {
-    await process() // Stays on main actor when nonisolated(nonsending)
-}
+## Data Movement
 
-nonisolated(nonsending) func process() async { }
-```
+Cross-isolation copies can dominate costs for large values. Prefer immutable snapshots sized to what the consumer actually needs.
 
-### 4. Use non-suspending APIs
-
-```swift
-// ❌ May suspend
-try await Task.checkCancellation()
-
-// ✅ No suspension
-if Task.isCancelled {
-    return
-}
-```
+Swift 6.4 adds safer non-copying/value-ownership facilities in the broader language/runtime, but adopt them only where profiling shows copy cost matters and the project's platform/toolchain supports them.
 
-### 5. Embrace parallelism
-
-```swift
-// ❌ Sequential
-for url in urls {
-    let image = await download(url)
-    images.append(image)
-}
-
-// ✅ Parallel
-await withTaskGroup(of: Image.self) { group in
-    for url in urls {
-        group.addTask { await download(url) }
-    }
-    for await image in group {
-        images.append(image)
-    }
-}
-```
-
-## Analyzing Suspensions in Instruments
-
-### View task states
-
-1. Select Swift Tasks instrument
-2. Switch to "Task States" view
-3. Look for Suspended states
-4. Check suspension duration
-
-### Navigate to code
-
-1. Click task state (Running/Suspended)
-2. Open Extended Detail
-3. Click related method
-4. Use "Open in Source Viewer"
-
-### Predict suspensions
-
-```swift
-Task {
-    // State 1: Running
-    // State 2: Suspended (switch to background)
-    let data = await backgroundWork()
-    // State 3: Running (in background)
-    // State 4: Suspended (switch to main actor)
-    // State 5: Running (on main actor)
-    await MainActor.run {
-        updateUI(data)
-    }
-}
-```
-
-### Optimization example
-
-```swift
-// Before: Two suspensions
-Task {
-    let data = await generate() // Suspension 1
-    self.items.append(data) // Suspension 2 (back to main)
-}
-
-// After: One suspension
-Task { @concurrent in
-    let data = generate() // No suspension (synchronous)
-    await MainActor.run {
-        self.items.append(data) // Suspension 1 (to main)
-    }
-}
-```
-
-## Choosing Execution Style
-
-### Decision checklist
-
-**Use async/parallel if**:
-- [ ] Blocks main actor visibly (>16ms)
-- [ ] Scales with data (N items → N cost)
-- [ ] Involves I/O (network, disk)
-- [ ] Benefits from combining operations
-- [ ] Called frequently
-
-**2+ checks** → async/parallel justified.
-
-### Start synchronous
-
-```swift
-// Start here
-func processData(_ data: Data) -> Result {
-    // Fast, in-memory work
-}
-```
-
-**Only move to async if**:
-- Instruments show main thread hang
-- User reports sluggishness
-- Work scales with input size
-
-### When to use async
-
-```swift
-func processData(_ data: Data) async -> Result {
-    // Use when:
-    // - Touches persistent storage
-    // - Parses large datasets
-    // - Network communication
-    // - Proven slow by profiling
-}
-```
-
-### When to use parallel
-
-```swift
-await withTaskGroup(of: Result.self) { group in
-    for item in items {
-        group.addTask { await process(item) }
-    }
-}
-
-// Use when:
-// - Multiple independent operations
-// - Time-to-first-result matters
-
-// - Work scales with collection size
-// - Proven beneficial by profiling
-```
-
-## Parallelism Costs
-
-### Tradeoffs
-
-**Benefits**:
-- Faster completion (if CPU-bound)
-- Better resource utilization
-- Improved responsiveness
-
-**Costs**:
-- Increased memory pressure
-- CPU scheduling overhead
-- System resource saturation
-- Battery drain
-- Thermal impact
-
-### When parallelism hurts
-
-```swift
-// ❌ Over-parallelization
-for i in 0..<1000 {
-    Task { await lightWork(i) }
-}
-// Creates 1000 tasks for trivial work
-```
-
-**Better**: Batch work or use fewer tasks.
-
-## UX-Driven Decisions
-
-### Smooth animations > raw speed
-
-```swift
-// 80ms on main thread, but animation stutters
-@MainActor
-func process() {
-    heavyWork() // Freezes UI for 1 frame
-}
-
-// 100ms total, but smooth UI
-@MainActor
-func process() async {
-    await backgroundWork() // UI stays responsive
-}
-```
-
-**Perception**: Smooth feels faster than raw speed.
-
-### Progress indication
-
-```swift
-@MainActor
-func loadItems() async {
-    isLoading = true
-    
-    for i in 0..<100 {
-        let item = await fetchItem(i)
-        items.append(item)
-        progress = Double(i) / 100 // Incremental updates
-    }
-    
-    isLoading = false
-}
-```
-
-Background work + progress = feels faster.
-
-## Optimization Checklist
-
-Before optimizing, ask:
-
-- [ ] Have I profiled with Instruments?
-- [ ] Is main thread actually blocked?
-- [ ] Can this be synchronous?
-- [ ] Am I over-parallelizing?
-- [ ] Is actor contention the issue?
-- [ ] Are suspensions necessary?
-- [ ] Does UX require background work?
-- [ ] Will this scale with data?
-
-## Common Patterns
-
-### Move heavy work to background
-
-```swift
-// Before
-@MainActor
-func generate() {
-    for _ in 0..<100 {
-        let item = heavyGeneration()
-        items.append(item)
-    }
-}
-
-// After
-@MainActor
-func generate() async {
-    for _ in 0..<100 {
-        let item = await backgroundGenerate()
-        items.append(item)
-    }
-}
-
-@concurrent
-func backgroundGenerate() async -> Item {
-    // Heavy work off main thread
-}
-```
-
-### Parallelize independent work
-
-Use task groups for dynamic parallel work. See [§ Embrace parallelism](#5-embrace-parallelism) above.
-
-### Reduce actor hops
-
-```swift
-// Before: Multiple hops
-actor Store {
-    func process() async {
-        let a = await fetch1() // Hop 1
-        let b = await fetch2() // Hop 2
-        let c = await fetch3() // Hop 3
-        combine(a, b, c)
-    }
-}
-
-// After: Batch fetches
-actor Store {
-    func process() async {
-        async let a = fetch1()
-        async let b = fetch2()
-        async let c = fetch3()
-        combine(await a, await b, await c) // One hop
-    }
-}
-```
-
-## Best Practices
-
-1. **Profile before optimizing** - measure baseline
-2. **Start synchronous** - add async only when needed
-3. **Use Instruments regularly** - catch issues early
-4. **Name tasks** - easier debugging in Instruments
-5. **Check suspension count** - reduce unnecessary awaits
-6. **Avoid premature parallelism** - has costs
-7. **Consider UX** - smooth > fast
-8. **Batch actor work** - reduce contention
-9. **Test on real devices** - simulators lie
-10. **Monitor in production** - real usage patterns differ
-
-## Debugging Performance
-
-### Instruments workflow
-
-1. Profile with Swift Concurrency template
-2. Identify main thread hangs
-3. Check task parallelism
-4. Analyze actor queue sizes
-5. Review suspension points
-6. Navigate to problematic code
-7. Apply optimizations
-8. Re-profile to verify
-
-### Red flags in Instruments
-
-- Main thread blocked >16ms
-- Actor queue size always 1
-- High suspension count
-- Tasks created but not running
-- Excessive task creation (1000+)
+## UX Over Throughput
+
+For app code, optimize user-perceived responsiveness before benchmark throughput:
+
+- keep scrolling and animation responsive;
+- show progressive results when useful;
+- prioritize current user intent over obsolete background work;
+- avoid parallel work that increases memory pressure enough to harm UI responsiveness.
+
+## Avoid
+
+- `Task.detached` as a generic performance fix;
+- actors around pure immutable data;
+- parallelizing every loop;
+- manually tuning task priority without evidence;
+- replacing clear async code with locks solely to remove `await`;
+- claiming performance improvement without before/after measurement.
+
+## Verification
+
+Capture the same workload before and after the change. Report wall time or latency distribution plus relevant task/actor evidence. Re-test on representative hardware, not only simulator/debug builds.

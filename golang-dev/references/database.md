@@ -1,144 +1,101 @@
 # Database Access
 
-Go's `database/sql` provides a solid foundation. Use `sqlx` or `pgx` on top — never an ORM.
+Choose the data layer that fits the project. `database/sql`, pgx, sqlx, query generators, and ORMs all have valid use cases; do not replace an established approach without a concrete reason.
 
 ## Library Choice
 
-| Library | Best for | Struct scanning | PostgreSQL-specific |
-| --- | --- | --- | --- |
-| `database/sql` | Portability | Manual `Scan` | No |
-| `sqlx` | Multi-database | `StructScan` | No |
-| `pgx` | PostgreSQL (30–50% faster) | `pgx.RowToStructByName` | Yes (COPY, LISTEN) |
-| GORM/ent | **Avoid** | Magic | Abstracted away |
+| Choice | Good fit | Trade-off |
+|---|---|---|
+| `database/sql` | portable, minimal dependencies | manual scanning/helpers |
+| pgx | PostgreSQL-specific features and protocol control | PostgreSQL-specific |
+| sqlx | light conveniences over SQL | still hand-written SQL |
+| query generator | compile-time query/types | generation workflow |
+| ORM | domain-heavy CRUD and established ORM projects | abstraction/query behavior must be understood |
 
-## Parameterized Queries
+Prefer the project's existing data layer unless correctness, performance, or maintainability evidence justifies a change.
+
+## Query Safety
+
+Parameterize values. Do not concatenate untrusted input into SQL.
 
 ```go
-// ✗ SQL injection
-query := fmt.Sprintf("SELECT * FROM users WHERE email = '%s'", email)
-
-// ✓ Parameterized (PostgreSQL)
-err := db.GetContext(ctx, &user, "SELECT id, name FROM users WHERE email = $1", email)
-
-// ✓ Parameterized (MySQL)
-err := db.GetContext(ctx, &user, "SELECT id, name FROM users WHERE email = ?", email)
+row := db.QueryRowContext(ctx,
+    "SELECT id, name FROM users WHERE email = $1", email)
 ```
 
-### Dynamic IN Clauses
+Placeholders do not parameterize identifiers such as table/column names. For dynamic identifiers, map user-facing choices to a small allowlist of known SQL fragments.
+
+## Context and Cancellation
+
+Use context-aware operations for work whose lifetime is scoped to a request/job:
 
 ```go
-query, args, err := sqlx.In("SELECT * FROM users WHERE id IN (?)", ids)
-query = db.Rebind(query)
-err = db.SelectContext(ctx, &users, query, args...)
+rows, err := db.QueryContext(ctx, query, args...)
 ```
 
-### Dynamic Column Names
+A library-level operation does not need an arbitrary timeout of its own when the caller already owns the deadline. Propagate the caller's context and define timeout policy at the appropriate boundary.
 
-Never interpolate from user input — use allowlist:
+## Rows and Errors
 
-```go
-allowed := map[string]bool{"name": true, "email": true, "created_at": true}
-if !allowed[sortCol] {
-    return fmt.Errorf("invalid sort column: %s", sortCol)
-}
-```
-
-## Error Handling
+When using APIs that return `*sql.Rows`:
 
 ```go
-err := db.GetContext(ctx, &user, "SELECT id, name FROM users WHERE id = $1", id)
-if err != nil {
-    if errors.Is(err, sql.ErrNoRows) {
-        return nil, ErrUserNotFound // domain error
-    }
-    return nil, fmt.Errorf("querying user %s: %w", id, err)
-}
-```
-
-### Always Close Rows
-
-```go
-rows, err := db.QueryContext(ctx, "SELECT id, name FROM users")
-if err != nil { return fmt.Errorf("querying: %w", err) }
+rows, err := db.QueryContext(ctx, query)
+if err != nil { return err }
 defer rows.Close()
 
-for rows.Next() { /* scan */ }
-if err := rows.Err(); err != nil { return fmt.Errorf("iterating: %w", err) }
-```
-
-### Error Patterns
-
-| Error | Detection | Action |
-| --- | --- | --- |
-| Not found | `errors.Is(err, sql.ErrNoRows)` | Return domain error |
-| Unique constraint | Driver-specific error code | Return conflict error |
-| Connection refused | `db.PingContext` fails | Fail fast, retry with backoff |
-| Serialization failure | PostgreSQL `40001` | Retry entire transaction |
-| Context canceled | `errors.Is(err, context.Canceled)` | Stop, propagate |
-
-## NULLable Columns
-
-Use pointer fields (`*string`, `*time.Time`) — works with scanning and JSON:
-
-```go
-type User struct {
-    ID    int        `db:"id"    json:"id"`
-    Name  string     `db:"name"  json:"name"`
-    Phone *string    `db:"phone" json:"phone,omitempty"`
+for rows.Next() {
+    // Scan...
 }
+return rows.Err()
 ```
+
+Distinguish expected absence from operational failure with `errors.Is(err, sql.ErrNoRows)` when using APIs that expose that sentinel. Driver-specific constraints should be translated at the repository/service boundary when callers need domain meaning.
 
 ## Transactions
 
-```go
-tx, err := db.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
-if err != nil { return err }
-defer tx.Rollback() // no-op if committed
+Keep a transaction focused on one consistency boundary. Check every operation and rollback on failure; a deferred rollback is normally safe because it becomes a no-op after commit.
 
-if _, err := tx.ExecContext(ctx, "UPDATE accounts SET balance = balance - $1 WHERE id = $2", amount, from); err != nil {
-    return fmt.Errorf("debit: %w", err)
-}
-if _, err := tx.ExecContext(ctx, "UPDATE accounts SET balance = balance + $1 WHERE id = $2", amount, to); err != nil {
-    return fmt.Errorf("credit: %w", err)
-}
+```go
+tx, err := db.BeginTx(ctx, nil)
+if err != nil { return err }
+defer tx.Rollback()
+
+// operations using tx
+
 return tx.Commit()
 ```
 
-Use `SELECT ... FOR UPDATE` when reading data you intend to modify.
+Choose isolation level, locking (`FOR UPDATE`), and retry behavior from the database's consistency requirements. Retry serialization/deadlock failures only when the whole transaction can be safely replayed.
+
+## NULL and Domain Types
+
+Use pointers, `sql.Null*`, driver-specific nullable types, or domain wrappers according to API semantics. Do not choose a representation solely because it is convenient for JSON; database nullability and public API nullability are separate concerns.
 
 ## Connection Pool
 
-```go
-db.SetMaxOpenConns(25)
-db.SetMaxIdleConns(10)
-db.SetConnMaxLifetime(5 * time.Minute)
-db.SetConnMaxIdleTime(1 * time.Minute)
-```
+Pool values are workload settings, not universal constants. Tune with production metrics:
 
-## Context Propagation
+- open connections versus database/server limits;
+- wait count/time;
+- request latency and concurrency;
+- connection churn and lifetime;
+- database-side saturation.
 
-Always use `*Context` variants — queries respect cancellation and timeouts:
-
-```go
-db.QueryContext(ctx, "SELECT ...")  // ✓
-db.Query("SELECT ...")              // ✗ runs until completion
-```
+Set `MaxOpenConns`, `MaxIdleConns`, `ConnMaxLifetime`, and `ConnMaxIdleTime` only with an understood operational goal.
 
 ## Migrations
 
-Use external tools — never AI-generated schema SQL:
-- [golang-migrate](https://github.com/golang-migrate/migrate)
-- [Atlas](https://atlasgo.io/)
-- [Flyway](https://flywaydb.org/)
+Keep migrations explicit, reviewable, reproducible, and tested against representative data. Tools such as golang-migrate, Atlas, Flyway, or project-native migration systems are all reasonable choices.
 
-## Common Mistakes
+AI may help draft a migration, but generated DDL still requires normal schema review, rollback/forward strategy, and production-safety validation.
 
-| Mistake | Fix |
-| --- | --- |
-| SQL string concatenation | Parameterized queries |
-| Missing `rows.Close()` | `defer rows.Close()` immediately |
-| `db.Query` for non-returning SQL | Use `db.Exec` — Query leaks connections |
-| Ignoring `sql.ErrNoRows` | Check with `errors.Is` |
-| No context on DB calls | Always `*Context` variants |
-| No connection pool config | Set `MaxOpenConns`, `MaxIdleConns`, `ConnMaxLifetime` |
-| ORM for database access | Use sqlx or pgx directly |
+## Verification
+
+For database changes:
+
+1. test not-found and constraint paths;
+2. test transaction rollback/commit behavior;
+3. verify cancellation/deadline propagation where applicable;
+4. inspect generated/executed SQL when abstractions are involved;
+5. benchmark or query-plan (`EXPLAIN`) only when performance is part of the task.
