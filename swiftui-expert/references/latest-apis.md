@@ -8,6 +8,7 @@
 - [When Targeting iOS 17+](#when-targeting-ios-17)
 - [When Targeting iOS 18+](#when-targeting-ios-18)
 - [When Targeting iOS 26+](#when-targeting-ios-26)
+- [When Targeting iOS 27+](#when-targeting-ios-27)
 
 ---
 
@@ -427,6 +428,37 @@ PhotoGrid(photos: photos)
 **UIKit and AppKit lifecycle apps can now request SwiftUI scenes.** This enables using SwiftUI-only scene types like `MenuBarExtra` and `ImmersiveSpace` from imperative lifecycle apps via `UIApplication.shared.activateSceneSession(for:errorHandler:)`.
 
 > Source: "What's new in SwiftUI" (WWDC25, session 256)
+
+---
+
+## When Targeting iOS 27+
+
+WWDC26 / Xcode 27 adds a new generation of SwiftUI APIs. Check the project's SDK and deployment target before using them.
+
+### Documents
+
+- New document infrastructure supports direct URL access, asynchronous/incremental reading and writing, progress reporting, and multiple document-creation sources.
+- Prefer the new document APIs for large or partially updated documents where rewriting the full file is unnecessary.
+
+### Reordering and Swipe Actions
+
+- Reorderable-container APIs extend drag reordering beyond `List` to stacks, grids, and custom layouts.
+- Swipe actions can be enabled for content outside `List` using the new swipe-actions container support.
+- Alerts and confirmation dialogs support item-binding presentation patterns similar to sheets.
+
+### Toolbars and Resizability
+
+- Use toolbar visibility priority to keep important actions visible as available space changes.
+- Use overflow-menu and pinned-trailing toolbar APIs when actions need explicit adaptive behavior.
+- Consider toolbar minimize-on-scroll behavior for content-heavy navigation interfaces.
+
+### Images, State, and Builders
+
+- `AsyncImage` participates in standard HTTP caching by default; customize `URLRequest`, `URLSession`, or cache policy only when the app needs different behavior.
+- `@State` is a macro in the new SDK and lazily initializes stored class instances; this behavior is back-deployed to supported earlier OS releases when built with the new toolchain.
+- `ViewBuilder` implementation improvements surface as `ContentBuilder`; treat source-compatibility warnings from the new builder/toolchain as migration issues rather than manually reproducing old behavior.
+
+> Source: "What's new in SwiftUI" (WWDC26, session 269)
 
 ---
 

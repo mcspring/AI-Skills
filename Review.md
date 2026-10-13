@@ -33,3 +33,28 @@
 
 ### 删除文件 (Deleted)
 - `skills-main/` 目录及其下的所有内容。
+
+---
+
+# 2026-10-13：Skill 主定义现代化
+
+## 目标
+- 审查全部顶层 `SKILL.md`，减少重复说明和硬编码约束，使 Skill 更适合 Agent 按需加载。
+- 对齐当前语言与平台基线：Go 1.27、Rust 1.99、Swift 6.4、SwiftUI/iOS 27。
+- `swiftui-expert` 参考 `twostraws/SwiftUI-Agent-Skill` 的按主题路由与 actionable review 思路。
+
+## 设计决策
+- 采用“**短主 Skill + 按需 reference**”结构：主 Skill 只保留触发范围、核心原则、reference router 和验证方法。
+- 删除缺乏上下文依据的通用魔法数字与绝对规则，例如固定 context compaction 阈值、tool 数量、multi-agent token 倍数、benchmark 次数和统一动画参数。
+- 版本特性先检查项目实际 toolchain / deployment target / MSRV，再决定是否采用；不为追新版本而迁移。
+- 把 correctness、安全边界和可验证行为放在风格偏好之前，避免 architecture/style-only churn。
+
+## 本轮变更
+- 精简 `ai-context`、`ai-dev`、`apple-design`、`golang-dev`、`golang-expert`、`golang-perf`、`rust-expert`、`swift-concurrency`、`swiftui-expert` 共 9 个主 Skill。
+- 主 Skill 总行数由 1099 行降至 417 行，减少约 62%。
+- 为 `swiftui-expert/references/latest-apis.md` 增加 iOS 27 / WWDC26 API 概览，包括 Document API、通用 reordering/swipe actions、toolbar 自适应、AsyncImage caching 与新 `@State` 行为。
+
+## 后续迭代
+- 审查全部 `references/`，合并跨文档重复规则和过时版本说明。
+- 优先拆分超大 reference，并建立更窄的按需路由，降低单次上下文加载成本。
+- 更新 Go 1.27、Rust 1.99、Swift 6.4、SwiftUI/iOS 27 与 Apple 最新设计实践的细节内容。

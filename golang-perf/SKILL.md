@@ -1,82 +1,41 @@
 ---
 name: golang-perf
-description: >
-  Go testing, benchmarking, and troubleshooting. Use when writing tests with
-  testify, benchmarking with pprof/benchstat, debugging crashes/deadlocks/races,
-  or setting up CI regression detection. Covers stretchr/testify (assert/require/
-  mock/suite), benchmark methodology, profiling, Delve debugger, race detection,
-  and production debugging. Invoke with /golang-perf.
+description: Test, benchmark, profile, and troubleshoot Go programs. Use for unit/integration tests, race/deadlock debugging, pprof/trace, benchmark comparison, CI performance checks, and production diagnosis.
 license: MIT
-metadata:
-  version: "1.0.0"
-  sources:
-    - Go testing package
-    - stretchr/testify
-    - samber/cc-skills-golang
 ---
 
-# Go Testing, Benchmarking & Troubleshooting
+# Go Testing & Performance
 
-Testing, measurement, and debugging — the three pillars of reliable Go code. Write tests to constrain behavior, benchmark to prove performance, and debug systematically to find root causes.
+Reproduce first, measure second, change third. Prefer evidence over folklore.
 
-## When to Apply
+## Testing
 
-- Writing or reviewing tests with `stretchr/testify`
-- Benchmarking functions with `b.Loop()` / pprof / benchstat
-- Debugging crashes, deadlocks, races, or unexpected behavior
-- Setting up CI benchmark regression detection
-- Profiling production services
+- Use the standard `testing` package by default; use testify when the project already benefits from it.
+- Keep assertions focused on behavior and use `errors.Is`/`errors.As` for wrapped errors.
+- Prefer table tests when cases share behavior, but do not force them when individual tests are clearer.
+- Run race detection for code whose correctness depends on concurrency.
 
-## Categories
+See `references/testing.md`.
 
-| Priority | Category | Impact | Reference |
-|----------|----------|--------|-----------|
-| 1 | Testing (testify) | HIGH | [testing.md](references/testing.md) |
-| 2 | Benchmarking & Profiling | HIGH | [benchmarking.md](references/benchmarking.md) |
-| 3 | Troubleshooting & Debugging | HIGH | [troubleshooting.md](references/troubleshooting.md) |
+## Benchmarking & Profiling
 
----
+- Use `b.Loop()` when the project's Go version supports it.
+- Compare repeated samples with `benchstat`; choose sample counts based on noise and effect size rather than a fixed magic number.
+- Use pprof, execution tracing, and allocation profiles to identify actual bottlenecks.
+- Keep benchmark setup outside the measured region when appropriate and prevent accidental dead-code elimination.
+- Treat CI regression thresholds as workload-specific and calibrate them from historical variance.
 
-## Quick Reference
+See `references/benchmarking.md`.
 
-### 1. Testing with testify (HIGH)
+## Troubleshooting
 
-- `require` for preconditions (stop on failure), `assert` for verifications (continue)
-- Argument order: always `(expected, actual)`
-- Use `is.ErrorIs` not `is.Equal` for error comparison — walks wrapped chains
-- Mock: embed `mock.Mock`, implement with `m.Called()`, verify with `AssertExpectations(t)`
-- Suite: `SetupSuite` → `SetupTest` → `TestXxx` → `TearDownTest` → `TearDownSuite`
-- Always include `suite.Run(t, new(MySuite))` launcher — without it, zero tests run
+- Capture the exact failure, stack/trace, inputs, and environment before changing code.
+- Form one falsifiable hypothesis at a time and add a regression test when practical.
+- Escalate from logs and targeted tests to race detector, pprof/trace, Delve, and production telemetry as needed.
+- For Go 1.27 projects, use the `goroutineleak` pprof profile when investigating permanently blocked goroutines.
 
-### 2. Benchmarking & Profiling (HIGH)
+See `references/troubleshooting.md`.
 
-- Use `b.Loop()` (Go 1.24+) — prevents compiler dead code elimination
-- Always `-count=10` minimum for statistical significance
-- Compare with `benchstat old.txt new.txt` — never eyeball single runs
-- Profile from benchmarks: `-cpuprofile`, `-memprofile`, `-trace`
-- `alloc_objects` for GC churn, `inuse_space` for leaks
-- Track regressions in CI with benchdiff/cob/gobenchdata
+## Verification
 
-### 3. Troubleshooting (HIGH)
-
-- **NO FIXES WITHOUT ROOT CAUSE** — symptom fixes create new bugs
-- Reproduce before you fix — write a failing test first
-- One hypothesis at a time — change one thing, measure, confirm
-- Always run `go test -race ./...` for concurrency bugs
-- Escalate tools incrementally: `fmt.Println` → `slog` → pprof → Delve
-- `GOTRACEBACK=all` for full stack traces on panics
-
----
-
-## Category Selection by Task
-
-| Task | Primary Categories |
-|------|-------------------|
-| Writing unit tests | Testing |
-| Creating mocks | Testing |
-| Measuring performance | Benchmarking |
-| CI regression detection | Benchmarking |
-| Crash / panic debugging | Troubleshooting |
-| Memory leak investigation | Benchmarking, Troubleshooting |
-| Race condition debugging | Troubleshooting |
-| Production latency spike | Benchmarking, Troubleshooting |
+After a fix, rerun the reproducer and the narrow relevant test/benchmark first, then the broader suite. Report measured before/after results for performance claims.

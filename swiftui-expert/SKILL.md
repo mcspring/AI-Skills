@@ -1,96 +1,59 @@
 ---
 name: swiftui-expert
-description: Write, review, or improve SwiftUI code following best practices for state management, view composition, performance, macOS-specific APIs, and iOS 26+ Liquid Glass adoption. Use when building new SwiftUI features, refactoring existing views, reviewing code quality, or adopting modern SwiftUI patterns.
+description: Write, review, and modernize SwiftUI code for Apple platforms. Use for state/data flow, view composition, navigation, layout, accessibility, performance, animation, charts, macOS behavior, and current SwiftUI APIs.
 ---
 
-# SwiftUI Expert Skill
+# SwiftUI Expert
 
-## Operating Rules
+Review SwiftUI for correctness, current API usage, maintainability, accessibility, and measured performance. Report real issues; avoid style-only churn.
 
-- Consult `references/latest-apis.md` at the start of every task to avoid deprecated APIs
-- Prefer native SwiftUI APIs over UIKit/AppKit bridging unless bridging is necessary
-- Focus on correctness and performance; do not enforce specific architectures (MVVM, VIPER, etc.)
-- Encourage separating business logic from views for testability without mandating how
-- Follow Apple's Human Interface Guidelines and API design patterns
-- Only adopt Liquid Glass when explicitly requested by the user (see `references/liquid-glass.md`)
-- Present performance optimizations as suggestions, not requirements
-- Use `#available` gating with sensible fallbacks for version-specific APIs
+## Start Here
 
-## Task Workflow
+1. Check the project's Swift version, SDK/Xcode version, and deployment targets before recommending version-specific APIs.
+2. Load only the references relevant to the task. For broad reviews, start with `references/latest-apis.md`.
+3. Preserve project architecture unless the requested change requires restructuring.
+4. During feature or bug-fix work, keep unrelated modernization as separate suggestions.
 
-### Review existing SwiftUI code
-- Read the code under review and identify which topics apply
-- Flag deprecated APIs (compare against `references/latest-apis.md`)
-- Run the Topic Router below for each relevant topic
-- Validate `#available` gating and fallback paths for iOS 26+ features
+Current ecosystem baseline: Swift 6.4 and the 2027 Apple platform SDK generation are available. Never assume a project targets them; respect its existing toolchain and deployment target.
 
-### Improve existing SwiftUI code
-- Audit current implementation against the Topic Router topics
-- Replace deprecated APIs with modern equivalents from `references/latest-apis.md`
-- Refactor hot paths to reduce unnecessary state updates
-- Extract complex view bodies into separate subviews
-- Suggest image downsampling when `UIImage(data:)` is encountered (optional optimization, see `references/image-optimization.md`)
+## Core Guidance
 
-### Implement new SwiftUI feature
-- Design data flow first: identify owned vs injected state
-- Structure views for optimal diffing (extract subviews early)
-- Apply correct animation patterns (implicit vs explicit, transitions)
-- Use `Button` for all tappable elements; add accessibility grouping and labels
-- Gate version-specific APIs with `#available` and provide fallbacks
+- Prefer native SwiftUI APIs; bridge to UIKit/AppKit only when SwiftUI cannot express the requirement cleanly.
+- Treat each `View` as an invalidation boundary: pass only the data it reads and keep frequently changing state close to the smallest affected subtree.
+- Use Observation (`@Observable`, `@State`, `@Bindable`) when supported by the project's target; use older wrappers when required by compatibility.
+- Keep stable identity in `ForEach`/lists and avoid expensive work, filtering, formatting, decoding, or synchronous I/O in `body`.
+- Prefer semantic controls such as `Button` over gesture-only tap handling, and validate Dynamic Type, VoiceOver, Reduce Motion, contrast, and hit targets.
+- Use modern navigation and presentation APIs appropriate to the deployment target.
+- Measure performance problems with Instruments when code inspection alone cannot establish impact.
+- Apply Liquid Glass and other visual-system features intentionally; system components should usually provide the platform appearance automatically.
+- Do not add third-party dependencies unless the task or project already calls for them.
 
-### Topic Router
+## Reference Router
 
-Consult the reference file for each topic relevant to the current task:
-
-| Topic | Reference |
-|-------|-----------|
-| State management | `references/state-management.md` |
-| View composition | `references/view-structure.md` |
-| Performance | `references/performance-patterns.md` |
-| Lists and ForEach | `references/list-patterns.md` |
-| Layout | `references/layout-best-practices.md` |
-| Sheets and navigation | `references/sheet-navigation-patterns.md` |
-| ScrollView | `references/scroll-patterns.md` |
-| Animations | `references/animation.md` |
+| Need | Reference |
+|---|---|
+| New/deprecated APIs and platform availability | `references/latest-apis.md` |
+| State, Observation, bindings, environment | `references/state-management.md` |
+| View composition and invalidation | `references/view-structure.md` |
+| Runtime performance | `references/performance-patterns.md` |
+| Lists, identity, `ForEach` | `references/list-patterns.md` |
+| Adaptive/resizable layout | `references/layout-best-practices.md` |
+| Navigation, sheets, inspectors | `references/sheet-navigation-patterns.md` |
+| Scrolling and lazy containers | `references/scroll-patterns.md` |
+| Animation and transitions | `references/animation.md` |
 | Accessibility | `references/accessibility-patterns.md` |
-| Swift Charts | `references/charts.md` |
-| Image optimization | `references/image-optimization.md` |
-| Liquid Glass (iOS 26+) | `references/liquid-glass.md` |
-| macOS | `references/macos.md` |
-| macOS app lifecycle | `references/macos-app-lifecycle.md` |
-| macOS menubar Tuist app | `references/macos-menubar-tuist.md` |
-| Deprecated API lookup | `references/latest-apis.md` |
+| Charts | `references/charts.md` |
+| Images | `references/image-optimization.md` |
+| Liquid Glass / materials | `references/liquid-glass.md` |
+| macOS UI and lifecycle | `references/macos.md`, `references/macos-app-lifecycle.md` |
+| Menu bar + Tuist specifics | `references/macos-menubar-tuist.md` |
 
-## Correctness Checklist
+## Review Priorities
 
-These are hard rules -- violations are always bugs:
+1. Correctness and data ownership.
+2. API availability and deprecations.
+3. Accessibility and adaptive layout.
+4. Identity, invalidation, main-thread work, and measured performance.
+5. Code clarity and maintainability.
 
-- [ ] `@State` properties are `private`
-- [ ] `@Binding` only where a child modifies parent state
-- [ ] Passed values never declared as `@State` or `@StateObject` (they ignore updates)
-- [ ] `@StateObject` for view-owned objects; `@ObservedObject` for injected
-- [ ] iOS 17+: `@State` with `@Observable`; `@Bindable` for injected observables needing bindings
-- [ ] `ForEach` uses stable identity (never `.indices` for dynamic content)
-- [ ] Constant number of views per `ForEach` element
-- [ ] `.animation(_:value:)` always includes the `value` parameter
-- [ ] iOS 26+ APIs gated with `#available` and fallback provided
-- [ ] `import Charts` present in files using chart types
-
-## References
-
-- `references/latest-apis.md` -- **Read first for every task.** Deprecated-to-modern API transitions (iOS 15+ through iOS 26+)
-- `references/state-management.md` -- Property wrappers, data flow, `@Observable` migration
-- `references/view-structure.md` -- View extraction, container patterns, `@ViewBuilder`
-- `references/performance-patterns.md` -- Hot-path optimization, update control, `_logChanges()`
-- `references/list-patterns.md` -- ForEach identity, Table (iOS 16+), inline filtering pitfalls
-- `references/layout-best-practices.md` -- Layout patterns, GeometryReader alternatives
-- `references/accessibility-patterns.md` -- VoiceOver, Dynamic Type, grouping, traits
-- `references/animation.md` -- Implicit/explicit, transitions, phase/keyframe, Animatable, transactions
-- `references/charts.md` -- Swift Charts marks, axes, selection, styling, accessibility, Chart3D (iOS 26+)
-- `references/sheet-navigation-patterns.md` -- Sheets, NavigationSplitView, Inspector
-- `references/scroll-patterns.md` -- ScrollViewReader, programmatic scrolling
-- `references/image-optimization.md` -- AsyncImage, downsampling, caching
-- `references/liquid-glass.md` -- iOS 26+ Liquid Glass effects and fallback patterns
-- `references/macos.md` -- Scenes, window styling, views, file operations, drag & drop, AppKit interop
-- `references/macos-app-lifecycle.md` -- State transitions, networking, power management, security, deployment compliance
-- `references/macos-menubar-tuist.md` -- MenuBar Tuist App
+For partial reviews, load only the matching references and return only actionable findings.
