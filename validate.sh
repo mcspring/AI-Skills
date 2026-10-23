@@ -41,6 +41,15 @@ def check_local_links(file: Path, text: str) -> None:
         if not resolved.exists():
             errors.append(f"{file.relative_to(root)}: broken local link: {target}")
 
+def check_routed_references(skill_dir: Path, file: Path, text: str) -> None:
+    # Skill routers commonly render paths as inline code rather than Markdown
+    # links. Validate those too, relative to the Skill root.
+    for target in sorted(set(re.findall(r"(?<![\w./-])references/[A-Za-z0-9._/-]+\.md", text))):
+        if not (skill_dir / target).is_file():
+            errors.append(
+                f"{file.relative_to(root)}: missing routed reference: {target}"
+            )
+
 for skill_dir in skill_dirs:
     skill_file = skill_dir / "SKILL.md"
     text = skill_file.read_text(encoding="utf-8")
@@ -65,6 +74,7 @@ for skill_dir in skill_dirs:
             errors.append(f"{markdown.relative_to(root)}: not valid UTF-8")
             continue
         check_local_links(markdown, content)
+        check_routed_references(skill_dir, markdown, content)
 
     agents = skill_dir / "AGENTS.md"
     claude = skill_dir / "CLAUDE.md"
@@ -72,6 +82,12 @@ for skill_dir in skill_dirs:
         errors.append(
             f"{skill_dir.name}: AGENTS.md and CLAUDE.md differ; keep the agent instructions in sync"
         )
+
+# Root-level project documentation should not introduce broken local links
+# or machine-specific file URLs either.
+for markdown in sorted(root.glob("*.md")):
+    if markdown.is_file():
+        check_local_links(markdown, markdown.read_text(encoding="utf-8"))
 
 if errors:
     print(f"Validation failed ({len(errors)} issue(s)):", file=sys.stderr)
