@@ -17,7 +17,7 @@ description: Apple's approach to interface design, fluid physical motion, and de
 ## Task Workflow
 
 ### Build fluid UI interactions
-- Read [fluid-interfaces.md](file:///Users/mc/Workspaces/AI-Skills/apple-design/references/fluid-interfaces.md) for core principles (Response, 1:1 Tracking, Interruptibility).
+- Read [fluid-interfaces.md](references/fluid-interfaces.md) for core principles (Response, 1:1 Tracking, Interruptibility).
 - Use springs for gesture-driven interactions: damping ratio `1.0` (critically damped) for menus, and `~0.8` (under-damped) when the gesture carries momentum (flicks, throws).
 - Implement 1:1 tracking using Pointer Events with `setPointerCapture`.
 - Handle velocity handoff by passing raw absolute velocity or relative velocity normalized by remaining distance.
@@ -25,7 +25,7 @@ description: Apple's approach to interface design, fluid physical motion, and de
 - Implement progressive boundary resistance (rubber-banding) using the damping formula: `(overshoot * dimension * constant) / (dimension + constant * abs(overshoot))`.
 
 ### Build polished UI components
-- Read [design-engineering.md](file:///Users/mc/Workspaces/AI-Skills/apple-design/references/design-engineering.md) for detail rules.
+- Read [design-engineering.md](references/design-engineering.md) for detail rules.
 - Add instant press feedback on buttons (`transform: scale(0.97)` on `:active`).
 - Never animate entrances from `scale(0)`; start from `scale(0.9–0.97)` + `opacity: 0`.
 - Make popovers and dropdowns origin-aware by setting `transform-origin` to their trigger (except modals).
@@ -36,14 +36,14 @@ description: Apple's approach to interface design, fluid physical motion, and de
 - Use stagger delays of 30–80ms for group item entrances.
 
 ### Review UI and motion code
-- Read [motion-review.md](file:///Users/mc/Workspaces/AI-Skills/apple-design/references/motion-review.md) for the Ten Non-Negotiable Standards, escalation triggers, and remediation hierarchy.
+- Read [motion-review.md](references/motion-review.md) for the Ten Non-Negotiable Standards, escalation triggers, and remediation hierarchy.
 - Audit code against GPU-only rules (animating `transform` and `opacity` only).
 - Flag forbidden patterns like `transition: all`, `scale(0)` entrances, `ease-in` on UI, or missing hover queries.
 - Format review comments using a single markdown table with columns: `| Before | After | Why |`.
 - Formulate the review verdict with impact tiers and an explicit `Block` or `Approve` decision.
 
 ### Identify motion terminology
-- Read [motion-vocabulary.md](file:///Users/mc/Workspaces/AI-Skills/apple-design/references/motion-vocabulary.md) for reverse-lookup glossary matching sensations to standard terms.
+- Read [motion-vocabulary.md](references/motion-vocabulary.md) for reverse-lookup glossary matching sensations to standard terms.
 - Use precise terms (e.g. Stagger, Morph, Rubber-banding) when prompting AIs or designers.
 - Disambiguate similar terms (e.g., crossfade vs. morph vs. shared element transition) for clarity.
 
@@ -51,10 +51,10 @@ description: Apple's approach to interface design, fluid physical motion, and de
 
 | Topic | Reference |
 |-------|-----------|
-| UI Polish, component design rules, spring configuration, perceived performance, CSS transform & clip-path tips | [design-engineering.md](file:///Users/mc/Workspaces/AI-Skills/apple-design/references/design-engineering.md) |
-| WWDC fluid interface design, response latency, direct manipulation, interruptibility, rubber-banding, depth & translucency, typography | [fluid-interfaces.md](file:///Users/mc/Workspaces/AI-Skills/apple-design/references/fluid-interfaces.md) |
-| Motion code review methodology, ten non-negotiable standards, aggressive escalation triggers, remedial hierarchy, findings table | [motion-review.md](file:///Users/mc/Workspaces/AI-Skills/apple-design/references/motion-review.md) |
-| Comprehensive reverse-lookup glossary of UI motion terms (entrances, sequencing, scroll, feedback, easing, performance) | [motion-vocabulary.md](file:///Users/mc/Workspaces/AI-Skills/apple-design/references/motion-vocabulary.md) |
+| UI Polish, component design rules, spring configuration, perceived performance, CSS transform & clip-path tips | [design-engineering.md](references/design-engineering.md) |
+| WWDC fluid interface design, response latency, direct manipulation, interruptibility, rubber-banding, depth & translucency, typography | [fluid-interfaces.md](references/fluid-interfaces.md) |
+| Motion code review methodology, ten non-negotiable standards, aggressive escalation triggers, remedial hierarchy, findings table | [motion-review.md](references/motion-review.md) |
+| Comprehensive reverse-lookup glossary of UI motion terms (entrances, sequencing, scroll, feedback, easing, performance) | [motion-vocabulary.md](references/motion-vocabulary.md) |
 
 ## Key Metrics
 
@@ -76,7 +76,7 @@ description: Apple's approach to interface design, fluid physical motion, and de
 
 ## References
 
-- [design-engineering.md](file:///Users/mc/Workspaces/AI-Skills/apple-design/references/design-engineering.md) — UI polish rules, button scales, CSS transform secrets, clip-path reveals, stagger delays, WAAPI programmatic animation, and Sonner component design philosophy.
-- [fluid-interfaces.md](file:///Users/mc/Workspaces/AI-Skills/apple-design/references/fluid-interfaces.md) — Distilled WWDC design talks: response latency, 1:1 direct tracking, interruptibility, damping ratio/response physics, momentum projection, spatial consistency, depth materials, typography, and accessibility.
-- [motion-review.md](file:///Users/mc/Workspaces/AI-Skills/apple-design/references/motion-review.md) — Animation review process, ten non-negotiable standards, findings table, aggressive escalation triggers, and remediation hierarchy.
-- [motion-vocabulary.md](file:///Users/mc/Workspaces/AI-Skills/apple-design/references/motion-vocabulary.md) — Comprehensive reverse-lookup glossary of web animation vocabulary for matching user descriptions with standard motion terminology.
+- [design-engineering.md](references/design-engineering.md) — UI polish rules, button scales, CSS transform secrets, clip-path reveals, stagger delays, WAAPI programmatic animation, and Sonner component design philosophy.
+- [fluid-interfaces.md](references/fluid-interfaces.md) — Distilled WWDC design talks: response latency, 1:1 direct tracking, interruptibility, damping ratio/response physics, momentum projection, spatial consistency, depth materials, typography, and accessibility.
+- [motion-review.md](references/motion-review.md) — Animation review process, ten non-negotiable standards, findings table, aggressive escalation triggers, and remediation hierarchy.
+- [motion-vocabulary.md](references/motion-vocabulary.md) — Comprehensive reverse-lookup glossary of web animation vocabulary for matching user descriptions with standard motion terminology.
