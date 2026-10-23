@@ -7,6 +7,7 @@ description: Apple's approach to interface design, fluid physical motion, and de
 
 ## Operating Rules
 
+- Avoid unnecessary supporting text, descriptive copy, and redundant UI microcopy.
 - **Design interaction and visuals together.** Motion is not a layer added after the pixels. Prototype interactively to discover and fine-tune the interface feel.
 - **Prioritize continuous feedback.** Update the UI 1:1 with the pointer during dragging, sliding, or scrolling—never animate only at the end of the gesture.
 - **Never lock out input during transitions.** Every animation must be interruptible, starting from the current presentation (live) values rather than target values.

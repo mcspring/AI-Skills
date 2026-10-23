@@ -18,6 +18,8 @@ Design for clarity, direct manipulation, continuity, platform conventions, and a
 - Tune springs, durations, velocity handoff, and resistance from the interaction context rather than fixed global constants.
 - For web implementations, prefer compositor-friendly motion and native CSS/WAAPI when sufficient; use JS when interaction state or gesture physics requires it.
 - Review visual polish together with behavior: press states, hover/focus, interruption, resizing, rotation/window changes, and error/empty/loading states.
+- Avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.
+- Avoid unnecessary supporting text, descriptive copy, and redundant UI microcopy.
 
 ## Workflow
 
