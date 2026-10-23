@@ -78,6 +78,10 @@ for skill_dir in skill_dirs:
 
     agents = skill_dir / "AGENTS.md"
     claude = skill_dir / "CLAUDE.md"
+    if agents.exists() != claude.exists():
+        errors.append(
+            f"{skill_dir.name}: AGENTS.md and CLAUDE.md must either both exist or both be absent"
+        )
     if agents.exists() and claude.exists() and agents.read_bytes() != claude.read_bytes():
         errors.append(
             f"{skill_dir.name}: AGENTS.md and CLAUDE.md differ; keep the agent instructions in sync"
