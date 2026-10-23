@@ -27,18 +27,18 @@ description: Apple's approach to interface design, fluid physical motion, and de
 ### Build polished UI components
 - Read [design-engineering.md](references/design-engineering.md) for detail rules.
 - Add instant press feedback on buttons (`transform: scale(0.97)` on `:active`).
-- Never animate entrances from `scale(0)`; start from `scale(0.9–0.97)` + `opacity: 0`.
+- Avoid entrances from `scale(0)` when they distort perceived size; use a modest scale and opacity change only when it clarifies hierarchy.
 - Make popovers and dropdowns origin-aware by setting `transform-origin` to their trigger (except modals).
 - Skip tooltip delays on subsequent hovers using transient state classes.
 - Use CSS transitions (not keyframes) for rapidly triggered items like toasts to support interruption.
 - Add subtle `filter: blur(2px)` to mask imperfect crossfades.
 - Use `@starting-style` to animate enter states without JS when possible.
-- Use stagger delays of 30–80ms for group item entrances.
+- Use brief staggered entrances only when they improve scanning; tune or remove them based on group size and interaction speed.
 
 ### Review UI and motion code
 - Read [motion-review.md](references/motion-review.md) for the Ten Non-Negotiable Standards, escalation triggers, and remediation hierarchy.
-- Audit code against GPU-only rules (animating `transform` and `opacity` only).
-- Flag forbidden patterns like `transition: all`, `scale(0)` entrances, `ease-in` on UI, or missing hover queries.
+- Prefer compositor-friendly properties for high-frequency motion, but allow layout animation when semantics require it and measured performance is acceptable.
+- Investigate `transition: all`, `scale(0)` entrances, `ease-in` timing, and missing hover queries when they cause unintended motion, poor responsiveness, or input-specific behavior gaps.
 - Format review comments using a single markdown table with columns: `| Before | After | Why |`.
 - Formulate the review verdict with impact tiers and an explicit `Block` or `Approve` decision.
 
@@ -56,23 +56,11 @@ description: Apple's approach to interface design, fluid physical motion, and de
 | Motion code review methodology, ten non-negotiable standards, aggressive escalation triggers, remedial hierarchy, findings table | [motion-review.md](references/motion-review.md) |
 | Comprehensive reverse-lookup glossary of UI motion terms (entrances, sequencing, scroll, feedback, easing, performance) | [motion-vocabulary.md](references/motion-vocabulary.md) |
 
-## Key Metrics
+## Tuning Guidance
 
-| Metric | Value |
-|--------|-------|
-| UI animation duration limit | < 300ms |
-| Tap/gesture hit padding hysteresis | ~10px |
-| Swipe dismissal velocity threshold | > 0.11 px/ms |
-| Tap commit gesture threshold | ~10px |
-| Custom spring bounce bounds | 0.1–0.3 |
-| Stagger delay interval between items | 30–80ms |
-| Micro-stagger or initial scale boundary | scale(0.9–0.97) |
-| Standard PiP/Move spring damping / response | 1.0 / 0.4 |
-| Rotation spring damping / response | 0.8 / 0.4 |
-| Drawer / sheet spring damping / response | 0.8 / 0.3 |
-| Deceleration rate for momentum projection | 0.998 (scroll) / 0.99 (snappy) |
-| Transition blur radius limit (Safari) | < 20px |
-| Maximum target frequency for any animation | < 100 times/day |
+- Treat timing, scale, spring, velocity, and resistance values as starting points—not Apple-wide standards.
+- Prefer native gesture and animation behavior when it already matches the interaction. Tune custom physics on the target device and validate interruption, frame pacing, and accessibility.
+- For the decision framework, see [fluid-interfaces.md](references/fluid-interfaces.md); for implementation trade-offs, see [design-engineering.md](references/design-engineering.md).
 
 ## References
 
