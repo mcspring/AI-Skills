@@ -11,7 +11,7 @@ description: Apple's approach to interface design, fluid physical motion, and de
 - **Prioritize continuous feedback.** Update the UI 1:1 with the pointer during dragging, sliding, or scrolling—never animate only at the end of the gesture.
 - **Never lock out input during transitions.** Every animation must be interruptible, starting from the current presentation (live) values rather than target values.
 - **Prefer CSS transitions/WAAPI for predetermined motion.** Use JS/springs for dynamic, interruptible, gesture-driven motion.
-- **Never animate keyboard-initiated actions.** Avoid delays for high-frequency keyboard/command shortcuts.
+- **Keep keyboard-initiated actions immediate and predictable.** Avoid animation or delay when it slows repeated command use or obscures focus.
 - **Ensure accessibility defaults.** Gate hover effects behind `@media (hover: hover) and (pointer: fine)` and provide crossfades or static transitions for `prefers-reduced-motion`.
 
 ## Task Workflow
@@ -39,8 +39,8 @@ description: Apple's approach to interface design, fluid physical motion, and de
 - Read [motion-review.md](references/motion-review.md) for the Ten Non-Negotiable Standards, escalation triggers, and remediation hierarchy.
 - Prefer compositor-friendly properties for high-frequency motion, but allow layout animation when semantics require it and measured performance is acceptable.
 - Investigate `transition: all`, `scale(0)` entrances, `ease-in` timing, and missing hover queries when they cause unintended motion, poor responsiveness, or input-specific behavior gaps.
-- Format review comments using a single markdown table with columns: `| Before | After | Why |`.
-- Formulate the review verdict with impact tiers and an explicit `Block` or `Approve` decision.
+- When a code-level comparison helps, use a table such as `Before / After / Why`; choose a format that fits the findings.
+- State impact and recommend `Block` or `Approve` when the review context requires an explicit decision.
 
 ### Identify motion terminology
 - Read [motion-vocabulary.md](references/motion-vocabulary.md) for reverse-lookup glossary matching sensations to standard terms.
