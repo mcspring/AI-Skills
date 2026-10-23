@@ -43,7 +43,7 @@ Do not combine an edition migration with unrelated refactors in one reviewable c
 
 ## Rust 1.99
 
-Rust 1.99.0 is the current stable release (2026-10-01).
+Rust 1.99.0 introduced the features below on 2026-10-01. The latest stable patch is [Rust 1.99.1](https://blog.rust-lang.org/2026/10/15/Rust-1.99.1/) (2026-10-15), which fixes regressions without changing the 1.99 feature baseline.
 
 ### C-ABI variadic definitions
 

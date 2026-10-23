@@ -15,7 +15,7 @@ Favor safe, explicit, idiomatic Rust and the project's existing ecosystem. Optim
 3. Preserve public API and MSRV unless the user asks to change them.
 4. Prefer std/core capabilities before adding crates.
 
-Current stable compiler: Rust 1.99. Rust 2024 is the current edition, but existing crates may intentionally target older editions or MSRVs.
+Current stable release line: Rust 1.99 (latest patch: [1.99.1](https://blog.rust-lang.org/2026/10/15/Rust-1.99.1/) as of 2026-10-23). Rust 2024 is the current edition, but existing crates may intentionally target older editions or MSRVs.
 
 ## Core Guidance
 
