@@ -8,6 +8,8 @@ license: MIT
 
 Reproduce first, measure second, change third. Prefer evidence over folklore.
 
+Current stable release line: Go 1.27 (latest patch: [1.27.3](https://go.dev/doc/devel/release), released 2026-10-19). Check the project's `go` directive and toolchain before recommending newer features; do not upgrade a project solely to match the latest release.
+
 ## Testing
 
 - Use the standard `testing` package by default; use testify when the project already benefits from it.

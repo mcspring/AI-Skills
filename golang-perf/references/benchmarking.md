@@ -99,7 +99,7 @@ go test -bench=BenchmarkParse -benchmem -count=10 ./... | tee /tmp/report-2.txt
 benchstat /tmp/report-1.txt /tmp/report-2.txt
 ```
 
-A change is meaningful only when benchstat shows a low p-value (< 0.05).
+A low p-value (for example, < 0.05) is evidence of a statistically detectable difference under the test's assumptions, not proof that the change is practically meaningful. Consider effect size, confidence intervals, benchmark noise, workload representativeness, and the cost of added complexity before drawing a conclusion.
 
 ## pprof Profile Types
 

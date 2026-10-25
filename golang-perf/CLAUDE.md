@@ -51,7 +51,7 @@ Testing, measurement, and debugging — the three pillars of reliable Go code. W
 ### 2. Benchmarking & Profiling (HIGH)
 
 - Use `b.Loop()` (Go 1.24+) — prevents compiler dead code elimination
-- Always `-count=10` minimum for statistical significance
+- Use repeated samples (often `-count=10` as a starting point); choose the count based on benchmark noise, expected effect size, and available runtime rather than treating ten as a universal minimum
 - Compare with `benchstat old.txt new.txt` — never eyeball single runs
 - Profile from benchmarks: `-cpuprofile`, `-memprofile`, `-trace`
 - `alloc_objects` for GC churn, `inuse_space` for leaks

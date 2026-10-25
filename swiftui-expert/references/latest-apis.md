@@ -4,6 +4,16 @@ Use this reference to identify current SwiftUI APIs by deployment target. Check 
 
 This is a lookup, not a requirement to modernize unrelated code.
 
+## Official Source Checks (2026-10-25)
+
+The iOS 27 / Xcode 27 guidance below was cross-checked against Apple's current documentation:
+
+- [iOS & iPadOS 27 release notes](https://developer.apple.com/documentation/ios-ipados-release-notes/ios-ipados-27-release-notes)
+- [SwiftUI source incompatibilities for `State` and `ContentBuilder` (TN3211)](https://developer.apple.com/documentation/technotes/tn3211-resolving-swiftui-source-incompatibilities-for-state-and-contentbuilder)
+- [What's new in SwiftUI](https://developer.apple.com/swiftui/whats-new/)
+
+These sources confirm the Xcode 27 `@State` macro and `ContentBuilder` changes, HTTP caching and request/session customization for `AsyncImage`, expanded reorderable containers, swipe-action containers, and item-based alert/confirmation-dialog APIs. Check the release notes for the exact SDK and deployment-target availability before using each API; do not infer availability from the marketing generation alone.
+
 ## iOS 15+ Baseline Replacements
 
 Prefer current names when the minimum target supports them:

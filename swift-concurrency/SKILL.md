@@ -14,7 +14,7 @@ Reason from isolation and ownership, not threads. Make the smallest safe change 
 3. Identify the isolation boundary and the value crossing it.
 4. Load only the matching reference file.
 
-Current Swift stable line is 6.4. Do not assume a project uses its defaults or newest concurrency behavior.
+Current Swift stable line is [6.4](https://www.swift.org/blog/swift-6.4-released/) (released 2026-09-15). Do not assume a project uses its defaults or newest concurrency behavior.
 
 ## Core Guidance
 
