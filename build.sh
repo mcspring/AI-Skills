@@ -11,6 +11,10 @@ command -v zip >/dev/null 2>&1 || {
   echo "error: 'zip' is required to build Skill archives" >&2
   exit 1
 }
+command -v unzip >/dev/null 2>&1 || {
+  echo "error: 'unzip' is required to verify Skill archives" >&2
+  exit 1
+}
 
 shopt -s nullglob
 skills=()
@@ -23,19 +27,32 @@ if ((${#skills[@]} == 0)); then
   exit 1
 fi
 
+temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/ai-skills-build.XXXXXX")"
+trap 'rm -rf -- "$temp_dir"' EXIT
+staging_dir="$temp_dir/staged"
+mkdir -p "$staging_dir"
+
+# Build and verify every archive before replacing any existing release files.
 for skill in "${skills[@]}"; do
   archive="${skill}.zip"
-  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/ai-skills-build.XXXXXX")"
-  temp_archive="$temp_dir/$archive"
-  trap 'rm -rf -- "${temp_dir:-}"' EXIT
+  temp_archive="$staging_dir/$archive"
 
   if ! zip -q -r "$temp_archive" "$skill"; then
     echo "error: failed to package $skill" >&2
     exit 1
   fi
-  mv -f -- "$temp_archive" "$archive"
-  rm -rf -- "$temp_dir"
-  temp_dir=""
-  trap - EXIT
-  echo "Built $archive"
+  if ! unzip -tq "$temp_archive" >/dev/null; then
+    echo "error: archive verification failed for $skill" >&2
+    exit 1
+  fi
+  if ! unzip -Z1 "$temp_archive" | grep -Fx "$skill/SKILL.md" >/dev/null; then
+    echo "error: archive is missing $skill/SKILL.md" >&2
+    exit 1
+  fi
+done
+
+for skill in "${skills[@]}"; do
+  archive="${skill}.zip"
+  mv -f -- "$staging_dir/$archive" "$archive"
+  echo "Built and verified $archive"
 done
